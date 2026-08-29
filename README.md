@@ -14,12 +14,12 @@ region.json
    │               ├── relief
    │               ├── slope
    │               └── aspect
-   └── rainfall → GPM IMERG Late Daily V07
-                   ├── daily AOI mean / max
+   └── rainfall → GPM IMERG Early V07
+                   ├── AOI daily mean precipitation depth
                    └── 1d / 3d / 7d AOI-mean accumulation
 ```
 
-The metadata and terrain paths use Microsoft Planetary Computer. Rainfall uses NASA GES DISC's GPM IMERG Late Daily V07 archive published through AWS Open Data.
+The metadata and terrain paths use Microsoft Planetary Computer. Rainfall uses NASA Earthdata GIS's public GPM IMERG Early V07 ImageServer.
 
 No Earth Engine project or NASA/PPS credentials are required by these commands.
 
@@ -83,17 +83,19 @@ geohazard-watch rainfall \
   --date 2026-08-10
 ```
 
-The rainfall command reads NASA GPM IMERG **Late Daily V07** data for the requested UTC day and the six preceding days. It reports each day's AOI mean and maximum precipitation plus cumulative AOI-mean precipitation for windows ending on the requested day:
+The rainfall command uses NASA's public `GPM_3IMERGHHE` ImageServer, which exposes IMERG **Early Run V07** precipitation at 0.1° every half hour. For the requested UTC date and the six preceding days it reports AOI daily-mean precipitation depth and cumulative AOI-mean precipitation for windows ending on the requested day:
 
 - `1d`;
 - `3d`;
 - `7d`.
 
-`accumulation_mean_mm` means **the sum of daily precipitation averaged over IMERG grid-cell centers inside the AOI**. It is not the sum of each day's maximum cell value.
+`accumulation_mean_mm` is the sum of the AOI's daily-mean precipitation depth. It is not a landslide probability and it is not the sum of daily maximum grid cells.
 
-IMERG Late Daily has a nominal 0.1° grid and is an expedited product rather than the Final research product. Recent dates may not be available yet; the command fails explicitly if any of the seven required days are missing instead of silently computing a partial window.
+The ImageServer publishes half-hourly precipitation as a rate in mm/hour. To avoid exceeding the service's 20-image mosaic limit, each day is processed in four six-hour blocks. Each block mosaics 12 half-hour slices with `MT_SUM`; the result is multiplied by 0.5 hour and the four blocks are accumulated into a daily precipitation depth.
 
-The AWS path is used anonymously over HTTPS. The implementation discovers the actual NetCDF object name for each date, so it does not hard-code the current `V07B` / `V07C` filename suffix.
+The command reads the service's advertised time extent before doing the seven-day calculation. If the requested date is newer than the ImageServer has published, it fails with the latest available service date instead of silently returning a partial window. The operational ImageServer can lag the underlying Early Run product, so this service freshness is treated as data provenance rather than assumed from IMERG's nominal latency.
+
+For antimeridian-crossing AOIs, the geometry is split into two envelopes and recombined by valid-pixel count.
 
 ## Run offline numerical tests
 
@@ -131,12 +133,10 @@ https://planetarycomputer.microsoft.com/api/stac/v1
 
 Terrain requires `cop-dem-glo-30` with a `data` COG asset.
 
-Rainfall uses:
+Rainfall uses the public NASA Earthdata GIS image service:
 
 ```text
-GPM_3IMERGDL.07
-NASA GES DISC / AWS Open Data
-s3://gesdisc-cumulus-prod-protected/GPM_L3/GPM_3IMERGDL.07/
+https://gis.earthdata.nasa.gov/image/rest/services/GESDISC/GPM_3IMERGHHE/ImageServer
 ```
 
-The rainfall product is IMERG Late Daily V07 at approximately 0.1° spatial resolution.
+`GPM_3IMERGHHE` is IMERG Early Run V07 at 0.1° / 30-minute resolution. The service exposes the `precipitation` variable and its current published time extent through the ArcGIS REST API.
