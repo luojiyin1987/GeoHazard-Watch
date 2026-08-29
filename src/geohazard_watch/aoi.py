@@ -44,8 +44,10 @@ class Region:
             values.append(number)
 
         west, south, east, north = values
-        if not -180 <= west < east <= 180:
-            raise ValueError("Region bbox must satisfy -180 <= west < east <= 180")
+        if not (-180 <= west <= 180 and -180 <= east <= 180) or west == east:
+            raise ValueError(
+                "Region longitudes must be within [-180, 180] and must not be equal"
+            )
         if not -90 <= south < north <= 90:
             raise ValueError("Region bbox must satisfy -90 <= south < north <= 90")
 
