@@ -9,6 +9,7 @@ from pystac_client.exceptions import APIError
 
 from .aoi import Region
 from .catalog import DEFAULT_STAC_ENDPOINT, query_catalog
+from .terrain import query_terrain
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -26,6 +27,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_STAC_ENDPOINT,
         help="STAC API endpoint",
     )
+
+    terrain_parser = subparsers.add_parser(
+        "terrain", help="derive Copernicus DEM terrain features for an AOI"
+    )
+    terrain_parser.add_argument("--region", required=True, help="path to region JSON")
+    terrain_parser.add_argument(
+        "--endpoint",
+        default=DEFAULT_STAC_ENDPOINT,
+        help="STAC API endpoint containing cop-dem-glo-30",
+    )
     return parser
 
 
@@ -33,23 +44,25 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if args.command == "catalog":
-        try:
-            region = Region.from_file(args.region)
+    try:
+        region = Region.from_file(args.region)
+        if args.command == "catalog":
             result = query_catalog(
                 region=region,
                 start=args.start,
                 end=args.end,
                 endpoint=args.endpoint,
             )
-        except (APIError, OSError, ValueError) as exc:
-            parser.error(str(exc))
+        elif args.command == "terrain":
+            result = query_terrain(region=region, endpoint=args.endpoint)
+        else:
+            parser.error(f"unsupported command: {args.command}")
+            return 2
+    except (APIError, OSError, ValueError) as exc:
+        parser.error(str(exc))
 
-        print(json.dumps(result, indent=2, sort_keys=True))
-        return 0
-
-    parser.error(f"unsupported command: {args.command}")
-    return 2
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
 
 
 if __name__ == "__main__":
