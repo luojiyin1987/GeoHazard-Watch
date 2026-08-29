@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 
+from pystac_client.exceptions import APIError
+
 from .aoi import Region
 from .catalog import DEFAULT_STAC_ENDPOINT, query_catalog
 
@@ -40,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
                 end=args.end,
                 endpoint=args.endpoint,
             )
-        except (OSError, ValueError) as exc:
+        except (APIError, OSError, ValueError) as exc:
             parser.error(str(exc))
 
         print(json.dumps(result, indent=2, sort_keys=True))
