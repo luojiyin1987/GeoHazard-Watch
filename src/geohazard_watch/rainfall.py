@@ -1,29 +1,29 @@
-"""Rainfall features from NASA GPM IMERG Late Daily V07 on AWS Open Data."""
+"""Rainfall features from NASA GPM IMERG Early V07 image services."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
-from pathlib import PurePosixPath
+from datetime import date, datetime, time, timedelta, timezone
+import json
 from typing import Iterable
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
-from xml.etree import ElementTree
-
-import netCDF4
-import numpy as np
 
 from .aoi import Region
 
 
-AWS_BUCKET_HOST = "https://gesdisc-cumulus-prod-protected.s3.us-west-2.amazonaws.com"
-AWS_PRODUCT_PREFIX = "GPM_L3/GPM_3IMERGDL.07"
-PRODUCT = "GPM_3IMERGDL"
+IMAGE_SERVER = (
+    "https://gis.earthdata.nasa.gov/image/rest/services/"
+    "GESDISC/GPM_3IMERGHHE/ImageServer"
+)
+PRODUCT = "GPM_3IMERGHHE"
 PRODUCT_VERSION = "07"
-PRECIPITATION_VARIABLE = "precipitation"
 HTTP_TIMEOUT_SECONDS = 30
-MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+PIXEL_SIZE_DEG = 0.1
+HALF_HOUR_HOURS = 0.5
+CHUNK_HOURS = 6
 WINDOW_DAYS = (1, 3, 7)
 
 
@@ -31,9 +31,7 @@ WINDOW_DAYS = (1, 3, 7)
 class DailyRainfall:
     day: date
     mean_mm: float
-    max_mm: float
     sample_count: int
-    source_key: str | None = None
 
 
 def _parse_date(value: str) -> date:
@@ -43,122 +41,164 @@ def _parse_date(value: str) -> date:
         raise ValueError(f"date must use YYYY-MM-DD format: {value!r}") from exc
 
 
-def _request_bytes(url: str) -> bytes:
-    request = Request(url, headers={"User-Agent": "GeoHazard-Watch/0.1"})
+def _request_json(url: str, params: dict[str, str]) -> dict[str, object]:
+    request_url = f"{url}?{urlencode(params)}"
+    request = Request(request_url, headers={"User-Agent": "GeoHazard-Watch/0.1"})
     try:
         with urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
             length = response.headers.get("Content-Length")
-            if length is not None and int(length) > MAX_DOWNLOAD_BYTES:
-                raise OSError(f"Remote rainfall object is unexpectedly large: {length} bytes")
-
-            chunks: list[bytes] = []
-            total = 0
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > MAX_DOWNLOAD_BYTES:
-                    raise OSError("Remote rainfall object exceeded the download size limit")
-                chunks.append(chunk)
-            return b"".join(chunks)
+            if length is not None and int(length) > MAX_RESPONSE_BYTES:
+                raise OSError(f"Rainfall service response is unexpectedly large: {length} bytes")
+            payload = response.read(MAX_RESPONSE_BYTES + 1)
     except (HTTPError, URLError, TimeoutError) as exc:
-        raise OSError(f"Failed to fetch rainfall data from {url}: {exc}") from exc
+        raise OSError(f"Failed to query NASA rainfall service: {exc}") from exc
 
-
-def _list_month_keys(year: int, month: int) -> list[str]:
-    prefix = f"{AWS_PRODUCT_PREFIX}/{year:04d}/{month:02d}/"
-    query = urlencode({"list-type": "2", "prefix": prefix})
-    payload = _request_bytes(f"{AWS_BUCKET_HOST}/?{query}")
+    if len(payload) > MAX_RESPONSE_BYTES:
+        raise OSError("Rainfall service response exceeded the size limit")
 
     try:
-        root = ElementTree.fromstring(payload)
-    except ElementTree.ParseError as exc:
-        raise OSError("AWS rainfall listing returned invalid XML") from exc
+        result = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise OSError("Rainfall service returned invalid JSON") from exc
 
-    keys = [element.text for element in root.findall(".//{*}Key") if element.text]
-    if root.findtext(".//{*}IsTruncated", default="false").lower() == "true":
-        raise OSError(f"Rainfall listing was unexpectedly truncated for {year:04d}-{month:02d}")
-    return keys
-
-
-def _find_daily_key(day: date, keys: Iterable[str]) -> str | None:
-    token = day.strftime("%Y%m%d")
-    matches = [
-        key
-        for key in keys
-        if token in PurePosixPath(key).name and key.endswith(".nc4")
-    ]
-    return max(matches, default=None)
+    if not isinstance(result, dict):
+        raise OSError("Rainfall service returned an unexpected response")
+    if "error" in result:
+        raise OSError(f"Rainfall service error: {result['error']}")
+    return result
 
 
-def _download_key(key: str) -> bytes:
-    return _request_bytes(f"{AWS_BUCKET_HOST}/{quote(key, safe='/')}")
-
-
-def _longitude_mask(lon: np.ndarray, bbox: tuple[float, float, float, float]) -> np.ndarray:
-    west, _, east, _ = bbox
+def _bbox_parts(
+    bbox: tuple[float, float, float, float],
+) -> list[tuple[float, float, float, float]]:
+    west, south, east, north = bbox
     if west < east:
-        return (lon >= west) & (lon <= east)
-    return (lon >= west) | (lon <= east)
+        return [bbox]
+    return [(west, south, 180.0, north), (-180.0, south, east, north)]
 
 
-def _extract_aoi_values(payload: bytes, bbox: tuple[float, float, float, float]) -> np.ma.MaskedArray:
+def _epoch_ms(value: datetime) -> int:
+    return int(value.timestamp() * 1000)
+
+
+def _service_time_extent() -> tuple[datetime, datetime]:
+    payload = _request_json(IMAGE_SERVER, {"f": "json"})
+    time_info = payload.get("timeInfo")
+    if not isinstance(time_info, dict):
+        raise OSError("Rainfall service does not advertise a time extent")
+    extent = time_info.get("timeExtent")
+    if not isinstance(extent, list) or len(extent) != 2:
+        raise OSError("Rainfall service returned an invalid time extent")
+
     try:
-        dataset = netCDF4.Dataset("inmemory.nc", mode="r", memory=payload)
-    except OSError as exc:
-        raise OSError(f"Downloaded IMERG file is not a readable NetCDF4 dataset: {exc}") from exc
+        start_ms, end_ms = (int(extent[0]), int(extent[1]))
+    except (TypeError, ValueError) as exc:
+        raise OSError("Rainfall service returned a non-numeric time extent") from exc
 
-    with dataset:
-        for name in ("lon", "lat", PRECIPITATION_VARIABLE):
-            if name not in dataset.variables:
-                raise ValueError(f"IMERG dataset is missing required variable {name!r}")
-
-        lon = np.asarray(dataset.variables["lon"][:], dtype=np.float64)
-        lat = np.asarray(dataset.variables["lat"][:], dtype=np.float64)
-        variable = dataset.variables[PRECIPITATION_VARIABLE]
-
-        lon_mask = _longitude_mask(lon, bbox)
-        _, south, _, north = bbox
-        lat_mask = (lat >= south) & (lat <= north)
-        if not np.any(lon_mask) or not np.any(lat_mask):
-            raise ValueError("AOI does not intersect any IMERG grid-cell centers")
-
-        values = np.ma.asarray(variable[:], dtype=np.float64)
-        dimensions = [name.lower() for name in variable.dimensions]
-
-        if "time" in dimensions:
-            time_axis = dimensions.index("time")
-            if values.shape[time_axis] != 1:
-                raise ValueError("Expected one daily IMERG time step per file")
-            values = np.ma.take(values, indices=0, axis=time_axis)
-            dimensions.pop(time_axis)
-
-        if "lat" not in dimensions or "lon" not in dimensions:
-            raise ValueError(
-                f"IMERG precipitation dimensions must include lat and lon, got {variable.dimensions!r}"
-            )
-
-        lat_axis = dimensions.index("lat")
-        lon_axis = dimensions.index("lon")
-        values = np.moveaxis(values, (lat_axis, lon_axis), (0, 1))
-        subset = values[np.ix_(lat_mask, lon_mask)]
-        return np.ma.masked_invalid(subset)
-
-
-def _daily_stats(day: date, payload: bytes, bbox: tuple[float, float, float, float], key: str) -> DailyRainfall:
-    subset = _extract_aoi_values(payload, bbox)
-    compressed = subset.compressed()
-    if compressed.size == 0:
-        raise ValueError(f"IMERG has no valid precipitation samples for {day.isoformat()}")
-
-    return DailyRainfall(
-        day=day,
-        mean_mm=float(compressed.mean(dtype=np.float64)),
-        max_mm=float(compressed.max()),
-        sample_count=int(compressed.size),
-        source_key=key,
+    return (
+        datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc),
+        datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc),
     )
+
+
+def _chunk_ranges(day: date) -> list[tuple[datetime, datetime]]:
+    start = datetime.combine(day, time.min, tzinfo=timezone.utc)
+    ranges: list[tuple[datetime, datetime]] = []
+    for hour in range(0, 24, CHUNK_HOURS):
+        chunk_start = start + timedelta(hours=hour)
+        # The end is one millisecond before the next chunk so adjacent chunks
+        # cannot select the same half-hour slice.
+        chunk_end = chunk_start + timedelta(hours=CHUNK_HOURS) - timedelta(milliseconds=1)
+        ranges.append((chunk_start, chunk_end))
+    return ranges
+
+
+def _geometry(bbox: tuple[float, float, float, float]) -> str:
+    west, south, east, north = bbox
+    return json.dumps(
+        {
+            "xmin": west,
+            "ymin": south,
+            "xmax": east,
+            "ymax": north,
+            "spatialReference": {"wkid": 4326},
+        },
+        separators=(",", ":"),
+    )
+
+
+def _chunk_mean_rate(
+    bbox_parts: Iterable[tuple[float, float, float, float]],
+    start: datetime,
+    end: datetime,
+) -> tuple[float, int]:
+    weighted_sum = 0.0
+    total_count = 0
+
+    mosaic_rule = json.dumps(
+        {
+            "mosaicMethod": "esriMosaicNone",
+            "mosaicOperation": "MT_SUM",
+        },
+        separators=(",", ":"),
+    )
+
+    for bbox in bbox_parts:
+        payload = _request_json(
+            f"{IMAGE_SERVER}/computeStatisticsHistograms",
+            {
+                "geometry": _geometry(bbox),
+                "geometryType": "esriGeometryEnvelope",
+                "time": f"{_epoch_ms(start)},{_epoch_ms(end)}",
+                "mosaicRule": mosaic_rule,
+                "pixelSize": f"{PIXEL_SIZE_DEG},{PIXEL_SIZE_DEG}",
+                "processAsMultidimensional": "false",
+                "f": "json",
+            },
+        )
+
+        statistics = payload.get("statistics")
+        if not isinstance(statistics, list) or not statistics:
+            raise ValueError(
+                f"No IMERG statistics available for {start.isoformat()} through {end.isoformat()}"
+            )
+        first = statistics[0]
+        if not isinstance(first, dict):
+            raise OSError("Rainfall service returned invalid statistics")
+
+        try:
+            mean = float(first["mean"])
+            count = int(first["count"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise OSError("Rainfall statistics are missing mean/count") from exc
+        if count <= 0:
+            continue
+
+        weighted_sum += mean * count
+        total_count += count
+
+    if total_count == 0:
+        raise ValueError("IMERG contains no valid samples inside the AOI")
+    return weighted_sum / total_count, total_count
+
+
+def _daily_rainfall(
+    day: date,
+    bbox: tuple[float, float, float, float],
+) -> DailyRainfall:
+    parts = _bbox_parts(bbox)
+    total_mm = 0.0
+    sample_count = 0
+
+    for start, end in _chunk_ranges(day):
+        # IMERG half-hourly precipitation is a rate in mm/hour. MT_SUM adds the
+        # 12 rates in each six-hour chunk, so multiply by the 0.5-hour duration
+        # represented by each slice to obtain precipitation depth in mm.
+        mean_rate_sum, count = _chunk_mean_rate(parts, start, end)
+        total_mm += mean_rate_sum * HALF_HOUR_HOURS
+        sample_count = max(sample_count, count)
+
+    return DailyRainfall(day=day, mean_mm=total_mm, sample_count=sample_count)
 
 
 def summarize_rainfall_days(days: Iterable[DailyRainfall]) -> dict[str, object]:
@@ -180,7 +220,6 @@ def summarize_rainfall_days(days: Iterable[DailyRainfall]) -> dict[str, object]:
         {
             "date": item.day.isoformat(),
             "mean_mm": round(item.mean_mm, 3),
-            "max_mm": round(item.max_mm, 3),
             "sample_count": item.sample_count,
         }
         for item in ordered
@@ -196,48 +235,46 @@ def query_rainfall(region: Region, target_date: str) -> dict[str, object]:
     """Return AOI rainfall features ending at target_date."""
 
     end_day = _parse_date(target_date)
-    requested_days = [end_day - timedelta(days=offset) for offset in range(6, -1, -1)]
+    requested_start = end_day - timedelta(days=6)
+    service_start, service_end = _service_time_extent()
 
-    month_cache: dict[tuple[int, int], list[str]] = {}
-    daily: list[DailyRainfall] = []
-    missing: list[str] = []
-
-    for day in requested_days:
-        month_key = (day.year, day.month)
-        if month_key not in month_cache:
-            month_cache[month_key] = _list_month_keys(*month_key)
-
-        key = _find_daily_key(day, month_cache[month_key])
-        if key is None:
-            missing.append(day.isoformat())
-            continue
-
-        daily.append(_daily_stats(day, _download_key(key), region.bbox, key))
-
-    if missing:
+    if requested_start < service_start.date():
         raise ValueError(
-            "IMERG Late Daily data are not available for all required dates: "
-            + ", ".join(missing)
+            "Requested 7-day rainfall window begins before the service record: "
+            f"{service_start.date().isoformat()}"
+        )
+    if end_day > service_end.date():
+        raise ValueError(
+            f"Rainfall service is currently available through {service_end.date().isoformat()}, "
+            f"not {end_day.isoformat()}"
         )
 
+    daily = [
+        _daily_rainfall(requested_start + timedelta(days=offset), region.bbox)
+        for offset in range(7)
+    ]
     summary = summarize_rainfall_days(daily)
+
     return {
         "region": region.as_dict(),
         "target_date": end_day.isoformat(),
         "source": {
-            "provider": "NASA GES DISC via AWS Open Data",
+            "provider": "NASA Earthdata GIS",
             "product": PRODUCT,
             "version": PRODUCT_VERSION,
-            "run": "Late",
-            "spatial_resolution_deg": 0.1,
-            "temporal_resolution": "daily",
-            "bucket": "gesdisc-cumulus-prod-protected",
-            "prefix": AWS_PRODUCT_PREFIX,
+            "run": "Early",
+            "spatial_resolution_deg": PIXEL_SIZE_DEG,
+            "temporal_resolution": "half-hourly source, aggregated to daily",
+            "service": IMAGE_SERVER,
+            "service_available_through": service_end.isoformat().replace("+00:00", "Z"),
         },
         "rainfall": summary,
         "method": {
-            "daily_mean": "unweighted mean precipitation across IMERG grid-cell centers inside the AOI",
+            "daily_mean": (
+                "AOI mean precipitation depth; half-hourly mm/hour rates are summed "
+                "server-side in six-hour chunks and multiplied by 0.5 hour"
+            ),
             "accumulation": "sum of AOI daily-mean precipitation for windows ending on target_date",
-            "max_mm": "maximum single IMERG grid-cell daily precipitation inside the AOI",
+            "antimeridian": "crossing AOIs are split and recombined by valid-pixel count",
         },
     }
