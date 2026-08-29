@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
-from io import BytesIO
-import math
 from pathlib import PurePosixPath
 from typing import Iterable
 from urllib.error import HTTPError, URLError
@@ -238,7 +236,7 @@ def query_rainfall(region: Region, target_date: str) -> dict[str, object]:
         },
         "rainfall": summary,
         "method": {
-            "daily_mean": "mean precipitation across IMERG grid-cell centers inside the AOI",
+            "daily_mean": "unweighted mean precipitation across IMERG grid-cell centers inside the AOI",
             "accumulation": "sum of AOI daily-mean precipitation for windows ending on target_date",
             "max_mm": "maximum single IMERG grid-cell daily precipitation inside the AOI",
         },
