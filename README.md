@@ -2,23 +2,26 @@
 
 GeoHazard Watch is an experiment in explainable geohazard monitoring built from public Earth-observation data.
 
-The project grows one evidence layer at a time. It does **not** claim to predict landslides. The current workflow can discover Sentinel observations for an area of interest (AOI) and derive a small set of terrain features from a public 30 m DEM.
+The project grows one evidence layer at a time. It does **not** claim to predict landslides. The current workflow can discover Sentinel observations for an area of interest (AOI), derive terrain features from a public 30 m DEM, and summarize recent GPM IMERG rainfall.
 
 ## Current pipeline
 
 ```text
 region.json
-   ├── catalog → Sentinel-1 / Sentinel-2 availability
-   └── terrain → Copernicus DEM GLO-30
-                  ├── elevation
-                  ├── relief
-                  ├── slope
-                  └── aspect
+   ├── catalog  → Sentinel-1 / Sentinel-2 availability
+   ├── terrain  → Copernicus DEM GLO-30
+   │               ├── elevation
+   │               ├── relief
+   │               ├── slope
+   │               └── aspect
+   └── rainfall → GPM IMERG Early V07
+                   ├── AOI daily mean precipitation depth
+                   └── 1d / 3d / 7d AOI-mean accumulation
 ```
 
-The metadata path uses the public Microsoft Planetary Computer STAC API. Terrain processing uses the same STAC catalog to locate Copernicus DEM GLO-30 tiles, signs the public data assets with the Planetary Computer SDK, and reads only the raster windows intersecting the AOI.
+The metadata and terrain paths use Microsoft Planetary Computer. Rainfall uses NASA Earthdata GIS's public GPM IMERG Early V07 ImageServer.
 
-No Earth Engine project or NASA credentials are required.
+No Earth Engine project or NASA/PPS credentials are required by these commands.
 
 ## Setup
 
@@ -29,8 +32,6 @@ python -m venv .venv
 source .venv/bin/activate
 python -m pip install -e .
 ```
-
-The terrain command adds NumPy, Rasterio, and the Planetary Computer SDK to the small STAC bootstrap dependency set.
 
 ## Define an AOI
 
@@ -54,14 +55,7 @@ geohazard-watch catalog \
   --end 2026-08-28
 ```
 
-The command prints JSON with the normalized AOI, query period, STAC endpoint, and for each dataset:
-
-- STAC collection ID;
-- scene count;
-- first acquisition time;
-- last acquisition time.
-
-This remains metadata discovery only; Sentinel imagery is not downloaded.
+The command reports Sentinel-1 / Sentinel-2 scene counts and first / last acquisition times. It does not download Sentinel imagery.
 
 ## Derive terrain features
 
@@ -70,38 +64,55 @@ geohazard-watch terrain \
   --region examples/region.json
 ```
 
-The terrain command searches the `cop-dem-glo-30` STAC collection and processes each intersecting DEM tile independently. It reads only the AOI window from each Cloud Optimized GeoTIFF rather than mosaicking the full DEM into memory.
-
-The JSON output includes:
+The terrain command searches `cop-dem-glo-30`, reads only AOI windows from each intersecting COG, and reports:
 
 - elevation minimum, maximum, and mean;
-- AOI relief (`max elevation - min elevation`);
-- mean and maximum slope in degrees;
-- fraction of sampled slope pixels at or above 30 degrees;
-- aspect distribution across N / NE / E / SE / S / SW / W / NW;
-- fraction of slope pixels treated as flat (`< 0.5°`);
-- DEM collection, asset key, and tile count.
+- AOI relief;
+- mean and maximum slope;
+- fraction of slope pixels at or above 30 degrees;
+- aspect distribution across eight sectors;
+- fraction of slope pixels treated as flat.
 
-Slope is calculated with finite differences. Copernicus DEM GLO-30 is stored in geographic coordinates, so horizontal pixel spacing is converted to approximate metres at the latitude of each AOI part before calculating gradients. This is appropriate for the regional screening workflow here, but it is not a substitute for a carefully chosen projected CRS in precision geomorphology.
+Slope is calculated with finite differences and approximate metre pixel spacing at the AOI latitude. This is intended for regional screening, not precision geomorphology.
 
-## Test the terrain math offline
+## Derive GPM rainfall features
 
-The core terrain calculations have deterministic synthetic-array tests and do not require STAC access:
+```bash
+geohazard-watch rainfall \
+  --region examples/region.json \
+  --date 2026-08-10
+```
+
+The rainfall command uses NASA's public `GPM_3IMERGHHE` ImageServer, which exposes IMERG **Early Run V07** precipitation at 0.1° every half hour. For the requested UTC date and the six preceding days it reports AOI daily-mean precipitation depth and cumulative AOI-mean precipitation for windows ending on the requested day:
+
+- `1d`;
+- `3d`;
+- `7d`.
+
+`accumulation_mean_mm` is the sum of the AOI's daily-mean precipitation depth. It is not a landslide probability and it is not the sum of daily maximum grid cells.
+
+The ImageServer publishes half-hourly precipitation as a rate in mm/hour. To avoid exceeding the service's 20-image mosaic limit, each day is processed in four six-hour blocks. Each block mosaics 12 half-hour slices with `MT_SUM`; the result is multiplied by 0.5 hour and the four blocks are accumulated into a daily precipitation depth.
+
+The command reads the service's advertised time extent before doing the seven-day calculation. If the requested date is newer than the ImageServer has published, it fails with the latest available service date instead of silently returning a partial window. The operational ImageServer can lag the underlying Early Run product, so this service freshness is treated as data provenance rather than assumed from IMERG's nominal latency.
+
+For antimeridian-crossing AOIs, the geometry is split into two envelopes and recombined by valid-pixel count.
+
+## Run offline numerical tests
 
 ```bash
 python -m unittest discover -s tests
 ```
 
-## Why build in layers?
+The terrain and rainfall aggregation math have deterministic tests that do not require remote data access.
 
-The project follows this progression:
+## Why build in layers?
 
 ```text
 public metadata access
         ↓
 terrain features
         ↓
-rainfall / soil-moisture features
+rainfall features
         ↓
 Sentinel change signals
         ↓
@@ -112,7 +123,7 @@ validation against historical events
 
 Each layer should be usable and testable before the next one is added. This keeps data-access failures, numerical-processing failures, and scientific-model assumptions separate.
 
-## Data source
+## Data sources
 
 The default STAC endpoint is:
 
@@ -120,4 +131,12 @@ The default STAC endpoint is:
 https://planetarycomputer.microsoft.com/api/stac/v1
 ```
 
-It can be overridden with `--endpoint` so compatible providers can be tested without changing AOI files. A terrain endpoint must provide the `cop-dem-glo-30` collection with a `data` COG asset.
+Terrain requires `cop-dem-glo-30` with a `data` COG asset.
+
+Rainfall uses the public NASA Earthdata GIS image service:
+
+```text
+https://gis.earthdata.nasa.gov/image/rest/services/GESDISC/GPM_3IMERGHHE/ImageServer
+```
+
+`GPM_3IMERGHHE` is IMERG Early Run V07 at 0.1° / 30-minute resolution. The service exposes the `precipitation` variable and its current published time extent through the ArcGIS REST API.
