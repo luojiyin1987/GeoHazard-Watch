@@ -240,17 +240,20 @@ def query_rainfall(region: Region, target_date: str) -> dict[str, object]:
 
     end_day = _parse_date(target_date)
     requested_start = end_day - timedelta(days=6)
+    required_start = datetime.combine(requested_start, time.min, tzinfo=timezone.utc)
+    required_end = datetime.combine(end_day, time(23, 30), tzinfo=timezone.utc)
     service_start, service_end = _service_time_extent()
 
-    if requested_start < service_start.date():
+    if service_start > required_start:
         raise ValueError(
-            "Requested 7-day rainfall window begins before the service record: "
-            f"{service_start.date().isoformat()}"
+            "Requested 7-day rainfall window begins before a complete UTC day is available: "
+            f"service starts at {service_start.isoformat().replace('+00:00', 'Z')}"
         )
-    if end_day > service_end.date():
+    if service_end < required_end:
         raise ValueError(
-            f"Rainfall service is currently available through {service_end.date().isoformat()}, "
-            f"not {end_day.isoformat()}"
+            "Requested 7-day rainfall window includes an incomplete UTC day: "
+            f"service is available through {service_end.isoformat().replace('+00:00', 'Z')}, "
+            f"but {end_day.isoformat()} requires data through 23:30Z"
         )
 
     daily = [
