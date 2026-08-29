@@ -10,6 +10,7 @@ import numpy as np
 import planetary_computer
 import pystac
 import pystac_client
+from pystac_client.stac_api_io import StacApiIO
 import rasterio
 from rasterio.errors import RasterioIOError
 from rasterio.windows import Window, from_bounds
@@ -126,9 +127,12 @@ class _TerrainAccumulator:
         if elevation.shape[0] < 3 or elevation.shape[1] < 3:
             return
 
-        dz_dy, dz_dx = np.gradient(elevation, dy_m, dx_m)
-        slope = np.degrees(np.arctan(np.hypot(dz_dx, dz_dy)))
-        aspect = (np.degrees(np.arctan2(-dz_dx, dz_dy)) + 360.0) % 360.0
+        # Array rows increase southward. The second argument below therefore
+        # represents southward spacing; the aspect formula accounts for that
+        # orientation while slope magnitude is unaffected by axis direction.
+        dz_south, dz_east = np.gradient(elevation, dy_m, dx_m)
+        slope = np.degrees(np.arctan(np.hypot(dz_east, dz_south)))
+        aspect = (np.degrees(np.arctan2(-dz_east, dz_south)) + 360.0) % 360.0
 
         interior = np.zeros(elevation.shape, dtype=bool)
         interior[1:-1, 1:-1] = True
@@ -233,8 +237,8 @@ def _read_item_into_accumulator(
             if window.width < 1 or window.height < 1:
                 continue
 
-            masked = src.read(1, window=window, masked=True)
-            elevation = np.asarray(masked.filled(np.nan), dtype=np.float64)
+            masked = src.read(1, window=window, masked=True).astype(np.float64)
+            elevation = np.asarray(masked.filled(np.nan))
             window_transform = src.window_transform(window)
             center_latitude = (bbox[1] + bbox[3]) / 2.0
             dx_m, dy_m = _pixel_spacing_m(window_transform, src.crs, center_latitude)
@@ -247,7 +251,7 @@ def query_terrain(
 ) -> dict[str, Any]:
     """Derive terrain summary features from Copernicus DEM GLO-30."""
 
-    stac_io = pystac_client.stac_api_io.StacApiIO(timeout=DEFAULT_STAC_TIMEOUT)
+    stac_io = StacApiIO(timeout=DEFAULT_STAC_TIMEOUT)
     client = pystac_client.Client.open(endpoint, stac_io=stac_io)
     bbox_parts = _bbox_parts(region.bbox)
     items = _search_dem_items(client, bbox_parts)
