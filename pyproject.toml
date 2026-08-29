@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "geohazard-watch"
+version = "0.1.0"
+description = "Public-data geohazard monitoring experiments"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "pystac-client>=0.8,<1",
+]
+
+[project.scripts]
+geohazard-watch = "geohazard_watch.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/geohazard_watch"]
