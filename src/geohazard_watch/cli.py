@@ -9,6 +9,7 @@ from pystac_client.exceptions import APIError
 
 from .aoi import Region
 from .catalog import DEFAULT_STAC_ENDPOINT, query_catalog
+from .rainfall import query_rainfall
 from .terrain import query_terrain
 
 
@@ -37,6 +38,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_STAC_ENDPOINT,
         help="STAC API endpoint containing cop-dem-glo-30",
     )
+
+    rainfall_parser = subparsers.add_parser(
+        "rainfall", help="derive GPM IMERG rainfall features ending on a date"
+    )
+    rainfall_parser.add_argument("--region", required=True, help="path to region JSON")
+    rainfall_parser.add_argument(
+        "--date",
+        required=True,
+        help="last UTC day included in 1/3/7-day rainfall windows (YYYY-MM-DD)",
+    )
     return parser
 
 
@@ -55,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "terrain":
             result = query_terrain(region=region, endpoint=args.endpoint)
+        elif args.command == "rainfall":
+            result = query_rainfall(region=region, target_date=args.date)
         else:
             parser.error(f"unsupported command: {args.command}")
             return 2
