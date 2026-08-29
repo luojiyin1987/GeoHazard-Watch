@@ -31,7 +31,7 @@ WINDOW_DAYS = (1, 3, 7)
 class DailyRainfall:
     day: date
     mean_mm: float
-    sample_count: int
+    min_sample_count: int
 
 
 def _parse_date(value: str) -> date:
@@ -188,7 +188,7 @@ def _daily_rainfall(
 ) -> DailyRainfall:
     parts = _bbox_parts(bbox)
     total_mm = 0.0
-    sample_count = 0
+    sample_counts: list[int] = []
 
     for start, end in _chunk_ranges(day):
         # IMERG half-hourly precipitation is a rate in mm/hour. MT_SUM adds the
@@ -196,9 +196,13 @@ def _daily_rainfall(
         # represented by each slice to obtain precipitation depth in mm.
         mean_rate_sum, count = _chunk_mean_rate(parts, start, end)
         total_mm += mean_rate_sum * HALF_HOUR_HOURS
-        sample_count = max(sample_count, count)
+        sample_counts.append(count)
 
-    return DailyRainfall(day=day, mean_mm=total_mm, sample_count=sample_count)
+    return DailyRainfall(
+        day=day,
+        mean_mm=total_mm,
+        min_sample_count=min(sample_counts),
+    )
 
 
 def summarize_rainfall_days(days: Iterable[DailyRainfall]) -> dict[str, object]:
@@ -220,7 +224,7 @@ def summarize_rainfall_days(days: Iterable[DailyRainfall]) -> dict[str, object]:
         {
             "date": item.day.isoformat(),
             "mean_mm": round(item.mean_mm, 3),
-            "sample_count": item.sample_count,
+            "min_sample_count": item.min_sample_count,
         }
         for item in ordered
     ]
@@ -271,10 +275,11 @@ def query_rainfall(region: Region, target_date: str) -> dict[str, object]:
         "rainfall": summary,
         "method": {
             "daily_mean": (
-                "AOI mean precipitation depth; half-hourly mm/hour rates are summed "
-                "server-side in six-hour chunks and multiplied by 0.5 hour"
+                "unweighted AOI grid-cell mean precipitation depth; half-hourly mm/hour "
+                "rates are summed server-side in six-hour chunks and multiplied by 0.5 hour"
             ),
             "accumulation": "sum of AOI daily-mean precipitation for windows ending on target_date",
+            "min_sample_count": "smallest valid grid-cell count among the day's four six-hour chunks",
             "antimeridian": "crossing AOIs are split and recombined by valid-pixel count",
         },
     }
