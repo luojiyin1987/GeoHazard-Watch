@@ -9,6 +9,7 @@ description = "Public-data geohazard monitoring experiments"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "netCDF4>=1.7,<2",
   "numpy>=2,<3",
   "planetary-computer>=1,<2",
   "pystac-client>=0.8,<1",
