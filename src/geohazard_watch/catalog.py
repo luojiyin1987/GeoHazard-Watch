@@ -6,11 +6,13 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 import pystac_client
+from pystac_client.stac_api_io import StacApiIO
 
 from .aoi import Region
 
 
 DEFAULT_STAC_ENDPOINT = "https://planetarycomputer.microsoft.com/api/stac/v1"
+DEFAULT_STAC_TIMEOUT = (5.0, 30.0)
 COLLECTIONS = {
     "sentinel1": "sentinel-1-grd",
     "sentinel2": "sentinel-2-l2a",
@@ -38,20 +40,29 @@ def _summarize_collection(
     bbox: tuple[float, float, float, float],
     datetime_range: str,
 ) -> dict[str, Any]:
-    items = list(
-        client.search(
-            collections=[collection_id],
-            bbox=list(bbox),
-            datetime=datetime_range,
-        ).items()
-    )
+    scene_count = 0
+    first_acquired: datetime | None = None
+    last_acquired: datetime | None = None
 
-    acquired = sorted(item.datetime for item in items if item.datetime is not None)
+    for item in client.search(
+        collections=[collection_id],
+        bbox=list(bbox),
+        datetime=datetime_range,
+    ).items():
+        scene_count += 1
+        acquired = item.datetime
+        if acquired is None:
+            continue
+        if first_acquired is None or acquired < first_acquired:
+            first_acquired = acquired
+        if last_acquired is None or acquired > last_acquired:
+            last_acquired = acquired
+
     return {
         "collection": collection_id,
-        "scene_count": len(items),
-        "first_acquired": _format_datetime(acquired[0]) if acquired else None,
-        "last_acquired": _format_datetime(acquired[-1]) if acquired else None,
+        "scene_count": scene_count,
+        "first_acquired": _format_datetime(first_acquired),
+        "last_acquired": _format_datetime(last_acquired),
     }
 
 
@@ -72,7 +83,8 @@ def query_catalog(
         f"{start_date.isoformat()}T00:00:00Z/"
         f"{end_date.isoformat()}T23:59:59Z"
     )
-    client = pystac_client.Client.open(endpoint)
+    stac_io = StacApiIO(timeout=DEFAULT_STAC_TIMEOUT)
+    client = pystac_client.Client.open(endpoint, stac_io=stac_io)
 
     return {
         "region": region.as_dict(),
