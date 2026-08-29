@@ -9,7 +9,10 @@ description = "Public-data geohazard monitoring experiments"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "numpy>=2,<3",
+  "planetary-computer>=1,<2",
   "pystac-client>=0.8,<1",
+  "rasterio>=1.4,<2",
 ]
 
 [project.scripts]
