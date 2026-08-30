@@ -3,7 +3,7 @@
     "name": "NASA Global Landslide Catalog (GLC) / COOLR",
     "legacy_export": "https://data.nasa.gov/dataset/global-landslide-catalog-export",
     "current_layer": "https://gis.earthdata.nasa.gov/gis05/rest/services/Landslides/COOLR_Reports_Points/MapServer/0",
-    "curation_note": "Initial records use stable legacy GLC event IDs for reproducibility. Re-verify event metadata and original source material before scientific publication."
+    "curation_note": "Initial records preserve stable legacy GLC event IDs. Source-specific and location-quality fields remain explicitly null until re-verified against COOLR/original source material rather than being inferred from coordinates."
   },
   "events": [
     {
@@ -15,7 +15,19 @@
       "trigger": "downpour",
       "country": "Turkey",
       "location": "Artvin",
-      "source_url": "https://data.nasa.gov/dataset/global-landslide-catalog-export"
+      "source_url": "https://data.nasa.gov/dataset/global-landslide-catalog-export",
+      "catalog_record_url": "https://gis.earthdata.nasa.gov/gis05/rest/services/Landslides/COOLR_Reports_Points/MapServer/0/query?where=event_import_source%3D%27GLC%27%20AND%20event_import_id%3D%271189%27&outFields=*&returnGeometry=false&f=pjson",
+      "metadata_review_status": "core_only",
+      "source_name": null,
+      "source_link": null,
+      "event_description": null,
+      "location_description": null,
+      "location_accuracy": null,
+      "landslide_category": null,
+      "landslide_size": null,
+      "landslide_setting": null,
+      "gazetteer_closest_point": null,
+      "gazetteer_distance_km": null
     },
     {
       "id": "glc-2342-rize-2010",
@@ -26,7 +38,19 @@
       "trigger": "downpour",
       "country": "Turkey",
       "location": "Rize",
-      "source_url": "https://data.nasa.gov/dataset/global-landslide-catalog-export"
+      "source_url": "https://data.nasa.gov/dataset/global-landslide-catalog-export",
+      "catalog_record_url": "https://gis.earthdata.nasa.gov/gis05/rest/services/Landslides/COOLR_Reports_Points/MapServer/0/query?where=event_import_source%3D%27GLC%27%20AND%20event_import_id%3D%272342%27&outFields=*&returnGeometry=false&f=pjson",
+      "metadata_review_status": "core_only",
+      "source_name": null,
+      "source_link": null,
+      "event_description": null,
+      "location_description": null,
+      "location_accuracy": null,
+      "landslide_category": null,
+      "landslide_size": null,
+      "landslide_setting": null,
+      "gazetteer_closest_point": null,
+      "gazetteer_distance_km": null
     },
     {
       "id": "glc-4736-diyarbakir-2013",
@@ -37,7 +61,19 @@
       "trigger": "rain",
       "country": "Turkey",
       "location": "Diyarbakir",
-      "source_url": "https://data.nasa.gov/dataset/global-landslide-catalog-export"
+      "source_url": "https://data.nasa.gov/dataset/global-landslide-catalog-export",
+      "catalog_record_url": "https://gis.earthdata.nasa.gov/gis05/rest/services/Landslides/COOLR_Reports_Points/MapServer/0/query?where=event_import_source%3D%27GLC%27%20AND%20event_import_id%3D%274736%27&outFields=*&returnGeometry=false&f=pjson",
+      "metadata_review_status": "core_only",
+      "source_name": null,
+      "source_link": null,
+      "event_description": null,
+      "location_description": null,
+      "location_accuracy": null,
+      "landslide_category": null,
+      "landslide_size": null,
+      "landslide_setting": null,
+      "gazetteer_closest_point": null,
+      "gazetteer_distance_km": null
     }
   ]
 }
