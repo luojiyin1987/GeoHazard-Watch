@@ -2,7 +2,7 @@
 
 GeoHazard Watch is an experiment in explainable geohazard monitoring built from public Earth-observation data.
 
-The project grows one evidence layer at a time. It does **not** claim to predict landslides. The current workflow can discover Sentinel observations for an area of interest (AOI), derive terrain features from a public 30 m DEM, and summarize recent GPM IMERG rainfall.
+The project grows one evidence layer at a time. It does **not** claim to predict landslides. The current workflow can discover Sentinel observations for an area of interest (AOI), derive terrain features from a public 30 m DEM, summarize recent GPM IMERG rainfall, and replay those evidence layers around curated historical landslide events.
 
 ## Current pipeline
 
@@ -17,9 +17,15 @@ region.json
    └── rainfall → GPM IMERG Early V07
                    ├── AOI daily mean precipitation depth
                    └── 1d / 3d / 7d AOI-mean accumulation
+
+validation/events.json
+   └── validate → event-centered terrain + rainfall
+                    ├── historical event date
+                    ├── earlier same-location temporal control
+                    └── 1d / 3d / 7d rainfall deltas
 ```
 
-The metadata and terrain paths use Microsoft Planetary Computer. Rainfall uses NASA Earthdata GIS's public GPM IMERG Early V07 ImageServer.
+The metadata and terrain paths use Microsoft Planetary Computer. Rainfall uses NASA Earthdata GIS's public GPM IMERG Early V07 ImageServer. Historical validation starts from curated NASA Global Landslide Catalog (GLC) identifiers and keeps raw evidence visible instead of turning it into a hazard score.
 
 No Earth Engine project or NASA/PPS credentials are required by these commands.
 
@@ -97,13 +103,34 @@ The command reads the service's advertised time extent before doing the seven-da
 
 For antimeridian-crossing AOIs, the geometry is split into two envelopes and recombined by valid-pixel count.
 
+## Replay evidence around a historical event
+
+The initial validation manifest contains three rainfall/downpour-triggered events identified by stable NASA GLC event IDs. Run one event with:
+
+```bash
+geohazard-watch validate \
+  --event glc-2342-rize-2010
+```
+
+The default design is intentionally simple and inspectable:
+
+- build an approximately 10 km × 10 km AOI centered on the catalog point;
+- derive the existing terrain evidence once for that AOI;
+- derive 1/3/7-day rainfall ending on the historical event date;
+- derive the same rainfall evidence for the same AOI 28 days earlier;
+- report the raw evidence plus event-minus-control rainfall accumulation differences.
+
+The earlier date is a **temporal reference**, not a labeled negative example. A catalog containing no report at that place and date does not prove that no landslide occurred. The validation command therefore leaves `hazard_score` as `null` and makes no probability or forecast-skill claim.
+
+The initial `validation/events.json` records preserve legacy GLC event IDs for reproducibility. Event metadata and original source material should be re-verified before using these cases in scientific publication or a formal benchmark.
+
 ## Run offline numerical tests
 
 ```bash
 python -m unittest discover -s tests
 ```
 
-The terrain and rainfall aggregation math have deterministic tests that do not require remote data access.
+Terrain, rainfall aggregation, and validation assembly have deterministic tests that do not require remote data access.
 
 ## Why build in layers?
 
@@ -114,14 +141,16 @@ terrain features
         ↓
 rainfall features
         ↓
+historical event validation
+        ↓
 Sentinel change signals
         ↓
-explainable evidence fusion
+measure incremental evidence value
         ↓
-validation against historical events
+explainable evidence fusion
 ```
 
-Each layer should be usable and testable before the next one is added. This keeps data-access failures, numerical-processing failures, and scientific-model assumptions separate.
+Each layer should be usable and testable before the next one is added. A new evidence layer should eventually justify itself by improving discrimination on historical cases rather than merely increasing pipeline complexity.
 
 ## Data sources
 
@@ -140,3 +169,12 @@ https://gis.earthdata.nasa.gov/image/rest/services/GESDISC/GPM_3IMERGHHE/ImageSe
 ```
 
 `GPM_3IMERGHHE` is IMERG Early Run V07 at 0.1° / 30-minute resolution. The service exposes the `precipitation` variable and its current published time extent through the ArcGIS REST API.
+
+Historical event identifiers come from NASA's Global Landslide Catalog / Cooperative Open Online Landslide Repository lineage:
+
+```text
+https://data.nasa.gov/dataset/global-landslide-catalog-export
+https://gis.earthdata.nasa.gov/gis05/rest/services/Landslides/COOLR_Reports_Points/MapServer/0
+```
+
+The legacy GLC export is useful for stable event identifiers, while COOLR is the current repository lineage. The project treats catalog incompleteness, event-date uncertainty, point-location uncertainty, and reporting bias as validation limitations rather than hidden assumptions.
