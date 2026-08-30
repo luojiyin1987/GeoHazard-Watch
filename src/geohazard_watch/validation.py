@@ -119,7 +119,11 @@ class ValidationEvent:
             raise ValueError("validation event 'event_time_reference' must be one of: " + allowed)
         if event_time is not None:
             parsed_clock = _parse_event_clock(event_time)
-            if parsed_clock.minute not in (0, 30) or parsed_clock.second != 0 or parsed_clock.microsecond:
+            if (
+                parsed_clock.minute not in (0, 30)
+                or parsed_clock.second != 0
+                or parsed_clock.microsecond
+            ):
                 raise ValueError(
                     "validation event event_time must align to a 30-minute IMERG boundary"
                 )
@@ -502,6 +506,29 @@ def _rainfall_accumulations(result: dict[str, Any]) -> dict[str, float]:
     return values
 
 
+def _event_centered_accumulations(result: dict[str, Any]) -> dict[str, float]:
+    """Extract numeric 6/12/24/72-hour accumulation values from event-centered evidence."""
+
+    rainfall = result.get("rainfall")
+    if not isinstance(rainfall, dict):
+        raise ValueError("event-centered rainfall evidence is missing the 'rainfall' object")
+    accumulation = rainfall.get("accumulation_before_event_mm")
+    if not isinstance(accumulation, dict):
+        raise ValueError(
+            "event-centered rainfall evidence is missing accumulation_before_event_mm"
+        )
+
+    values: dict[str, float] = {}
+    for window in ("6h", "12h", "24h", "72h"):
+        value = accumulation.get(window)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(
+                f"event-centered rainfall evidence is missing numeric {window!r} accumulation"
+            )
+        values[window] = float(value)
+    return values
+
+
 def assemble_validation_result(
     *,
     event: ValidationEvent,
@@ -513,8 +540,9 @@ def assemble_validation_result(
     half_size_km: float,
     control_offset_days: int,
     event_centered_rainfall: dict[str, Any] | None = None,
+    event_centered_control_rainfall: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Assemble raw evidence plus event-vs-control and event-centered rainfall context."""
+    """Assemble raw evidence plus calendar-day and event-centered rainfall comparisons."""
 
     positive = _rainfall_accumulations(event_rainfall)
     control = _rainfall_accumulations(control_rainfall)
@@ -522,11 +550,32 @@ def assemble_validation_result(
         window: round(positive[window] - control[window], 3)
         for window in ("1d", "3d", "7d")
     }
+
+    if (event_centered_rainfall is None) != (event_centered_control_rainfall is None):
+        raise ValueError(
+            "event-centered event and control rainfall evidence must be provided together"
+        )
+
+    event_centered_delta: dict[str, float] | None = None
+    if event_centered_rainfall is not None and event_centered_control_rainfall is not None:
+        centered_positive = _event_centered_accumulations(event_centered_rainfall)
+        centered_control = _event_centered_accumulations(event_centered_control_rainfall)
+        event_centered_delta = {
+            window: round(centered_positive[window] - centered_control[window], 3)
+            for window in ("6h", "12h", "24h", "72h")
+        }
+
     spatial_validity = _spatial_validity(
         event=event,
         half_size_km=half_size_km,
         event_rainfall=event_rainfall,
     )
+
+    control_event_time_utc = None
+    if event.event_time_utc is not None:
+        control_event_time_utc = _format_utc(
+            event.event_time_utc - timedelta(days=control_offset_days)
+        )
 
     return {
         "event": event.as_dict(),
@@ -548,6 +597,11 @@ def assemble_validation_result(
                 "when a curated UTC event boundary is available, rainfall is accumulated over "
                 "6/12/24/72-hour half-open intervals immediately preceding that boundary"
             ),
+            "event_centered_control_time_utc": control_event_time_utc,
+            "event_centered_control_semantics": (
+                "same AOI and same UTC clock boundary shifted backward by control_offset_days; "
+                "this is a temporal comparison, not a confirmed non-landslide control"
+            ),
             "spatial_validity": spatial_validity,
         },
         "evidence": {
@@ -555,8 +609,12 @@ def assemble_validation_result(
             "event_rainfall": event_rainfall,
             "event_centered_rainfall": event_centered_rainfall,
             "temporal_control_rainfall": control_rainfall,
+            "event_centered_temporal_control_rainfall": event_centered_control_rainfall,
         },
-        "comparison": {"rainfall_accumulation_delta_mm": rainfall_delta},
+        "comparison": {
+            "rainfall_accumulation_delta_mm": rainfall_delta,
+            "event_centered_rainfall_delta_mm": event_centered_delta,
+        },
         "interpretation": {
             "hazard_score": None,
             "statement": (
@@ -591,11 +649,17 @@ def validate_event(
     terrain = query_terrain(region=region)
     event_rainfall = query_rainfall(region=region, target_date=event.event_date.isoformat())
     control_rainfall = query_rainfall(region=region, target_date=control_date.isoformat())
+
     event_centered_rainfall = None
+    event_centered_control_rainfall = None
     if event.event_time_utc is not None:
         event_centered_rainfall = query_event_centered_rainfall(
             region=region,
             event_time_utc=event.event_time_utc,
+        )
+        event_centered_control_rainfall = query_event_centered_rainfall(
+            region=region,
+            event_time_utc=event.event_time_utc - timedelta(days=control_offset_days),
         )
 
     return assemble_validation_result(
@@ -608,4 +672,5 @@ def validate_event(
         half_size_km=half_size_km,
         control_offset_days=control_offset_days,
         event_centered_rainfall=event_centered_rainfall,
+        event_centered_control_rainfall=event_centered_control_rainfall,
     )
