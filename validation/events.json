@@ -3,7 +3,7 @@
     "name": "NASA Global Landslide Catalog (GLC) / COOLR",
     "legacy_export": "https://data.nasa.gov/dataset/global-landslide-catalog-export",
     "current_layer": "https://gis.earthdata.nasa.gov/gis05/rest/services/Landslides/COOLR_Reports_Points/MapServer/0",
-    "curation_note": "The initial three validation records were manually re-verified against the legacy NASA GLC export. Source text is preserved as catalog provenance, including inconsistencies, rather than silently corrected or geolocated beyond the catalog record. Catalog clock times do not carry a timezone field; where a clock time exists, this manifest explicitly records a curated IANA timezone assumption for event-centered rainfall sensitivity analysis."
+    "curation_note": "The initial three validation records were manually re-verified against the legacy NASA GLC export. Source text is preserved as catalog provenance, including inconsistencies, rather than silently corrected or geolocated beyond the catalog record. Catalog clock times do not carry a timezone field; where a clock time exists, this manifest explicitly records a curated local-time assumption and freezes the resulting UTC event boundary for reproducible event-centered rainfall analysis."
   },
   "events": [
     {
@@ -13,6 +13,7 @@
       "event_time": "20:00:00",
       "event_timezone": "Europe/Istanbul",
       "event_time_reference": "catalog_clock_assumed_local",
+      "event_time_utc": "2009-09-23T17:00:00Z",
       "longitude": 41.6822,
       "latitude": 41.3639,
       "trigger": "downpour",
@@ -39,6 +40,7 @@
       "event_time": "18:00:00",
       "event_timezone": "Europe/Istanbul",
       "event_time_reference": "catalog_clock_assumed_local",
+      "event_time_utc": "2010-08-26T15:00:00Z",
       "longitude": 40.6167,
       "latitude": 41.0524,
       "trigger": "downpour",
@@ -65,6 +67,7 @@
       "event_time": null,
       "event_timezone": null,
       "event_time_reference": null,
+      "event_time_utc": null,
       "longitude": 40.2306,
       "latitude": 37.9152,
       "trigger": "rain",
