@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from io import BytesIO
+import ssl
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, call, patch
+from urllib.error import HTTPError, URLError
 
 from geohazard_watch.aoi import Region
 from geohazard_watch.rainfall import (
     DailyRainfall,
+    HTTP_MAX_ATTEMPTS,
     _bbox_parts,
     _chunk_ranges,
     _daily_rainfall,
+    _request_json,
     query_rainfall,
     summarize_rainfall_days,
 )
@@ -119,6 +124,86 @@ class RainfallSummaryTests(unittest.TestCase):
             query_rainfall(region, "2026-08-10")
 
         daily_rainfall.assert_not_called()
+
+
+class RainfallRequestRetryTests(unittest.TestCase):
+    @staticmethod
+    def _response(payload: bytes = b'{"ok": true}') -> MagicMock:
+        response = MagicMock()
+        response.headers.get.return_value = None
+        response.read.return_value = payload
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        return response
+
+    @patch("geohazard_watch.rainfall.sleep")
+    @patch("geohazard_watch.rainfall.urlopen")
+    def test_transient_url_error_is_retried(self, urlopen, sleep) -> None:
+        urlopen.side_effect = [URLError("temporary TLS EOF"), self._response()]
+
+        result = _request_json("https://example.invalid/ImageServer", {"f": "json"})
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(0.5)
+
+    @patch("geohazard_watch.rainfall.sleep")
+    @patch("geohazard_watch.rainfall.urlopen")
+    def test_retryable_http_status_uses_exponential_backoff(self, urlopen, sleep) -> None:
+        errors = [
+            HTTPError("https://example.invalid", 503, "unavailable", {}, BytesIO()),
+            HTTPError("https://example.invalid", 429, "rate limited", {}, BytesIO()),
+            HTTPError("https://example.invalid", 500, "server error", {}, BytesIO()),
+        ]
+        urlopen.side_effect = [*errors, self._response()]
+
+        result = _request_json("https://example.invalid/ImageServer", {"f": "json"})
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(urlopen.call_count, 4)
+        self.assertEqual(sleep.call_args_list, [call(0.5), call(1.0), call(2.0)])
+
+    @patch("geohazard_watch.rainfall.sleep")
+    @patch("geohazard_watch.rainfall.urlopen")
+    def test_non_retryable_http_status_fails_immediately(self, urlopen, sleep) -> None:
+        urlopen.side_effect = HTTPError(
+            "https://example.invalid", 404, "not found", {}, BytesIO()
+        )
+
+        with self.assertRaisesRegex(OSError, "endpoint=ImageServer"):
+            _request_json("https://example.invalid/ImageServer", {"f": "json"})
+
+        self.assertEqual(urlopen.call_count, 1)
+        sleep.assert_not_called()
+
+    @patch("geohazard_watch.rainfall.sleep")
+    @patch("geohazard_watch.rainfall.urlopen")
+    def test_certificate_verification_failure_is_not_retried(self, urlopen, sleep) -> None:
+        certificate_error = ssl.SSLCertVerificationError(1, "certificate verify failed")
+        urlopen.side_effect = URLError(certificate_error)
+
+        with self.assertRaisesRegex(OSError, "certificate verify failed"):
+            _request_json("https://example.invalid/ImageServer", {"f": "json"})
+
+        self.assertEqual(urlopen.call_count, 1)
+        sleep.assert_not_called()
+
+    @patch("geohazard_watch.rainfall.sleep")
+    @patch("geohazard_watch.rainfall.urlopen")
+    def test_exhausted_retries_report_attempts_and_time_context(self, urlopen, sleep) -> None:
+        urlopen.side_effect = URLError("temporary TLS EOF")
+
+        with self.assertRaisesRegex(
+            OSError,
+            rf"after {HTTP_MAX_ATTEMPTS} attempts .*endpoint=computeStatisticsHistograms, time=1,2",
+        ):
+            _request_json(
+                "https://example.invalid/computeStatisticsHistograms",
+                {"time": "1,2", "f": "json"},
+            )
+
+        self.assertEqual(urlopen.call_count, HTTP_MAX_ATTEMPTS)
+        self.assertEqual(sleep.call_args_list, [call(0.5), call(1.0), call(2.0)])
 
 
 if __name__ == "__main__":
