@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 import json
 import math
 from pathlib import Path
@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from .aoi import Region
+from .event_rainfall import query_event_centered_rainfall
 from .rainfall import query_rainfall
 from .terrain import query_terrain
 
@@ -20,6 +21,7 @@ DEFAULT_AOI_HALF_SIZE_KM = 5.0
 DEFAULT_CONTROL_OFFSET_DAYS = 28
 KM_PER_DEG_LAT = 111.32
 _METADATA_REVIEW_STATES = {"core_only", "reverified"}
+_EVENT_TIME_REFERENCES = {"catalog_clock_assumed_local"}
 _LOCATION_ACCURACY_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(km|m)\s*$", re.IGNORECASE)
 
 
@@ -48,6 +50,10 @@ class ValidationEvent:
     landslide_setting: str | None = None
     gazetteer_closest_point: str | None = None
     gazetteer_distance_km: float | None = None
+    event_time: str | None = None
+    event_timezone: str | None = None
+    event_time_reference: str | None = None
+    event_time_utc: datetime | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> "ValidationEvent":
@@ -88,6 +94,44 @@ class ValidationEvent:
             raise ValueError(
                 f"validation event 'event_date' must use YYYY-MM-DD format: {raw_date!r}"
             ) from exc
+
+        event_time = _optional_string(payload.get("event_time"), "event_time")
+        event_timezone = _optional_string(payload.get("event_timezone"), "event_timezone")
+        event_time_reference = _optional_string(
+            payload.get("event_time_reference"), "event_time_reference"
+        )
+        event_time_utc = _optional_utc_datetime(payload.get("event_time_utc"))
+        temporal_fields = (
+            event_time,
+            event_timezone,
+            event_time_reference,
+            event_time_utc,
+        )
+        if any(value is not None for value in temporal_fields) and any(
+            value is None for value in temporal_fields
+        ):
+            raise ValueError(
+                "validation event temporal metadata must provide event_time, event_timezone, "
+                "event_time_reference, and event_time_utc together"
+            )
+        if event_time_reference is not None and event_time_reference not in _EVENT_TIME_REFERENCES:
+            allowed = ", ".join(sorted(_EVENT_TIME_REFERENCES))
+            raise ValueError("validation event 'event_time_reference' must be one of: " + allowed)
+        if event_time is not None:
+            parsed_clock = _parse_event_clock(event_time)
+            if parsed_clock.minute not in (0, 30) or parsed_clock.second != 0 or parsed_clock.microsecond:
+                raise ValueError(
+                    "validation event event_time must align to a 30-minute IMERG boundary"
+                )
+        if event_time_utc is not None:
+            if (
+                event_time_utc.minute not in (0, 30)
+                or event_time_utc.second != 0
+                or event_time_utc.microsecond
+            ):
+                raise ValueError(
+                    "validation event event_time_utc must align to a 30-minute IMERG boundary"
+                )
 
         longitude = _finite_number(payload.get("longitude"), "longitude")
         latitude = _finite_number(payload.get("latitude"), "latitude")
@@ -136,6 +180,10 @@ class ValidationEvent:
                 payload.get("gazetteer_closest_point"), "gazetteer_closest_point"
             ),
             gazetteer_distance_km=gazetteer_distance,
+            event_time=event_time,
+            event_timezone=event_timezone,
+            event_time_reference=event_time_reference,
+            event_time_utc=event_time_utc,
         )
 
     def location_accuracy_km(self) -> float | None:
@@ -172,6 +220,37 @@ class ValidationEvent:
             "warning": warning,
         }
 
+    def temporal_quality(self) -> dict[str, object]:
+        """Return catalog clock provenance and the curated UTC boundary used for windows."""
+
+        if self.event_time_utc is None:
+            return {
+                "status": "date_only",
+                "catalog_event_time": None,
+                "timezone": None,
+                "time_reference": None,
+                "event_time_utc": None,
+                "event_centered_windows_available": False,
+                "warning": (
+                    "No catalog event clock time is available, so event-centered rainfall "
+                    "windows are not computed."
+                ),
+            }
+
+        return {
+            "status": "curated_timezone_assumption",
+            "catalog_event_time": self.event_time,
+            "timezone": self.event_timezone,
+            "time_reference": self.event_time_reference,
+            "event_time_utc": _format_utc(self.event_time_utc),
+            "event_centered_windows_available": True,
+            "warning": (
+                "The legacy GLC record provides a clock time but no timezone field. The UTC "
+                "event boundary is a curated local-time assumption for sensitivity analysis, "
+                "not a catalog-supplied timezone fact."
+            ),
+        }
+
     def as_dict(self) -> dict[str, object]:
         """Return a JSON-serializable event description with provenance context."""
 
@@ -192,6 +271,7 @@ class ValidationEvent:
                 "source_link": self.source_link,
             },
             "location_quality": self.location_quality(),
+            "temporal_quality": self.temporal_quality(),
             "landslide_metadata": {
                 "category": self.landslide_category,
                 "size": self.landslide_size,
@@ -210,6 +290,38 @@ def _optional_string(value: object, field: str) -> str | None:
         raise ValueError(f"validation event {field!r} must be a string or null")
     normalized = value.strip()
     return normalized or None
+
+
+def _parse_event_clock(value: str) -> time:
+    try:
+        return time.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"validation event 'event_time' must use HH:MM[:SS] format: {value!r}"
+        ) from exc
+
+
+def _optional_utc_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("validation event 'event_time_utc' must be an ISO-8601 UTC string or null")
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError(
+            f"validation event 'event_time_utc' must be ISO-8601: {value!r}"
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError("validation event 'event_time_utc' must include a UTC offset of Z or +00:00")
+    return parsed.astimezone(timezone.utc)
+
+
+def _format_utc(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _finite_number(value: object, field: str) -> float:
@@ -400,8 +512,9 @@ def assemble_validation_result(
     control_date: date,
     half_size_km: float,
     control_offset_days: int,
+    event_centered_rainfall: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Assemble raw evidence plus a simple event-vs-control rainfall comparison."""
+    """Assemble raw evidence plus event-vs-control and event-centered rainfall context."""
 
     positive = _rainfall_accumulations(event_rainfall)
     control = _rainfall_accumulations(control_rainfall)
@@ -431,11 +544,16 @@ def assemble_validation_result(
                 "terrain summarizes an AOI centered on the catalog point; interpret it as "
                 "site-specific only when event location quality supports that use"
             ),
+            "event_centered_rainfall_semantics": (
+                "when a curated UTC event boundary is available, rainfall is accumulated over "
+                "6/12/24/72-hour half-open intervals immediately preceding that boundary"
+            ),
             "spatial_validity": spatial_validity,
         },
         "evidence": {
             "terrain": terrain,
             "event_rainfall": event_rainfall,
+            "event_centered_rainfall": event_centered_rainfall,
             "temporal_control_rainfall": control_rainfall,
         },
         "comparison": {"rainfall_accumulation_delta_mm": rainfall_delta},
@@ -473,6 +591,12 @@ def validate_event(
     terrain = query_terrain(region=region)
     event_rainfall = query_rainfall(region=region, target_date=event.event_date.isoformat())
     control_rainfall = query_rainfall(region=region, target_date=control_date.isoformat())
+    event_centered_rainfall = None
+    if event.event_time_utc is not None:
+        event_centered_rainfall = query_event_centered_rainfall(
+            region=region,
+            event_time_utc=event.event_time_utc,
+        )
 
     return assemble_validation_result(
         event=event,
@@ -483,4 +607,5 @@ def validate_event(
         control_date=control_date,
         half_size_km=half_size_km,
         control_offset_days=control_offset_days,
+        event_centered_rainfall=event_centered_rainfall,
     )
