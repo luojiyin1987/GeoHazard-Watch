@@ -18,6 +18,7 @@ DEFAULT_EVENTS_PATH = Path("validation/events.json")
 DEFAULT_AOI_HALF_SIZE_KM = 5.0
 DEFAULT_CONTROL_OFFSET_DAYS = 28
 KM_PER_DEG_LAT = 111.32
+_METADATA_REVIEW_STATES = {"core_only", "reverified"}
 
 
 @dataclass(frozen=True)
@@ -33,18 +34,44 @@ class ValidationEvent:
     country: str
     location: str
     source_url: str
+    catalog_record_url: str
+    metadata_review_status: str
+    source_name: str | None = None
+    source_link: str | None = None
+    event_description: str | None = None
+    location_description: str | None = None
+    location_accuracy: str | None = None
+    landslide_category: str | None = None
+    landslide_size: str | None = None
+    landslide_setting: str | None = None
+    gazetteer_closest_point: str | None = None
+    gazetteer_distance_km: float | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> "ValidationEvent":
         """Parse and validate one event manifest record."""
 
-        required_strings = ("id", "trigger", "country", "location", "source_url")
+        required_strings = (
+            "id",
+            "trigger",
+            "country",
+            "location",
+            "source_url",
+            "catalog_record_url",
+            "metadata_review_status",
+        )
         values: dict[str, str] = {}
         for field in required_strings:
             value = payload.get(field)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"validation event {field!r} must be a non-empty string")
             values[field] = value.strip()
+
+        if values["metadata_review_status"] not in _METADATA_REVIEW_STATES:
+            allowed = ", ".join(sorted(_METADATA_REVIEW_STATES))
+            raise ValueError(
+                "validation event 'metadata_review_status' must be one of: " + allowed
+            )
 
         raw_event_id = payload.get("catalog_event_id")
         if isinstance(raw_event_id, bool) or not isinstance(raw_event_id, int):
@@ -67,6 +94,12 @@ class ValidationEvent:
         if not -90.0 < latitude < 90.0:
             raise ValueError("validation event latitude must be within (-90, 90)")
 
+        gazetteer_distance = _optional_finite_number(
+            payload.get("gazetteer_distance_km"), "gazetteer_distance_km"
+        )
+        if gazetteer_distance is not None and gazetteer_distance < 0:
+            raise ValueError("validation event gazetteer_distance_km must not be negative")
+
         return cls(
             id=values["id"],
             catalog_event_id=raw_event_id,
@@ -77,10 +110,61 @@ class ValidationEvent:
             country=values["country"],
             location=values["location"],
             source_url=values["source_url"],
+            catalog_record_url=values["catalog_record_url"],
+            metadata_review_status=values["metadata_review_status"],
+            source_name=_optional_string(payload.get("source_name"), "source_name"),
+            source_link=_optional_string(payload.get("source_link"), "source_link"),
+            event_description=_optional_string(
+                payload.get("event_description"), "event_description"
+            ),
+            location_description=_optional_string(
+                payload.get("location_description"), "location_description"
+            ),
+            location_accuracy=_optional_string(
+                payload.get("location_accuracy"), "location_accuracy"
+            ),
+            landslide_category=_optional_string(
+                payload.get("landslide_category"), "landslide_category"
+            ),
+            landslide_size=_optional_string(payload.get("landslide_size"), "landslide_size"),
+            landslide_setting=_optional_string(
+                payload.get("landslide_setting"), "landslide_setting"
+            ),
+            gazetteer_closest_point=_optional_string(
+                payload.get("gazetteer_closest_point"), "gazetteer_closest_point"
+            ),
+            gazetteer_distance_km=gazetteer_distance,
         )
 
+    def location_quality(self) -> dict[str, object]:
+        """Return explicit location-confidence context for interpreting terrain evidence."""
+
+        if self.location_accuracy is None:
+            status = "unverified"
+            warning = (
+                "Catalog point accuracy has not been re-verified against source material; "
+                "event-centered terrain is contextual and must not be treated as site-specific."
+            )
+        else:
+            status = "catalog_reported"
+            if self.metadata_review_status == "reverified":
+                status = "reverified_catalog_metadata"
+            warning = (
+                "Catalog-reported location accuracy is provenance metadata, not survey-grade "
+                "positional certainty."
+            )
+
+        return {
+            "status": status,
+            "accuracy": self.location_accuracy,
+            "description": self.location_description,
+            "gazetteer_closest_point": self.gazetteer_closest_point,
+            "gazetteer_distance_km": self.gazetteer_distance_km,
+            "warning": warning,
+        }
+
     def as_dict(self) -> dict[str, object]:
-        """Return a JSON-serializable event description."""
+        """Return a JSON-serializable event description with provenance context."""
 
         return {
             "id": self.id,
@@ -92,7 +176,31 @@ class ValidationEvent:
             "country": self.country,
             "location": self.location,
             "source_url": self.source_url,
+            "provenance": {
+                "catalog_record_url": self.catalog_record_url,
+                "metadata_review_status": self.metadata_review_status,
+                "source_name": self.source_name,
+                "source_link": self.source_link,
+            },
+            "location_quality": self.location_quality(),
+            "landslide_metadata": {
+                "category": self.landslide_category,
+                "size": self.landslide_size,
+                "setting": self.landslide_setting,
+                "event_description": self.event_description,
+            },
         }
+
+
+def _optional_string(value: object, field: str) -> str | None:
+    """Normalize an optional string while rejecting accidental non-string values."""
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"validation event {field!r} must be a string or null")
+    normalized = value.strip()
+    return normalized or None
 
 
 def _finite_number(value: object, field: str) -> float:
@@ -104,6 +212,12 @@ def _finite_number(value: object, field: str) -> float:
     if not math.isfinite(result):
         raise ValueError(f"validation event {field!r} must be a finite number")
     return result
+
+
+def _optional_finite_number(value: object, field: str) -> float | None:
+    if value is None:
+        return None
+    return _finite_number(value, field)
 
 
 def load_events(path: str | Path = DEFAULT_EVENTS_PATH) -> dict[str, ValidationEvent]:
@@ -165,10 +279,7 @@ def event_region(
     west = _wrap_longitude(event.longitude - lon_delta)
     east = _wrap_longitude(event.longitude + lon_delta)
 
-    return Region(
-        name=f"validation-{event.id}",
-        bbox=(west, south, east, north),
-    )
+    return Region(name=f"validation-{event.id}", bbox=(west, south, east, north))
 
 
 def _rainfall_accumulations(result: dict[str, Any]) -> dict[str, float]:
@@ -222,15 +333,17 @@ def assemble_validation_result(
                 "same AOI on an earlier date; absence of a cataloged event is not proof "
                 "that no landslide occurred"
             ),
+            "terrain_spatial_semantics": (
+                "terrain summarizes an AOI centered on the catalog point; interpret it as "
+                "site-specific only when event location quality supports that use"
+            ),
         },
         "evidence": {
             "terrain": terrain,
             "event_rainfall": event_rainfall,
             "temporal_control_rainfall": control_rainfall,
         },
-        "comparison": {
-            "rainfall_accumulation_delta_mm": rainfall_delta,
-        },
+        "comparison": {"rainfall_accumulation_delta_mm": rainfall_delta},
         "interpretation": {
             "hazard_score": None,
             "statement": (
