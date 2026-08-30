@@ -2,7 +2,7 @@
 
 GeoHazard Watch is an experiment in explainable geohazard monitoring built from public Earth-observation data.
 
-The project grows one evidence layer at a time. It does **not** claim to predict landslides. The current workflow can discover Sentinel observations for an area of interest (AOI), derive terrain features from a public 30 m DEM, summarize recent GPM IMERG rainfall, and replay those evidence layers around curated historical landslide events.
+The project grows one evidence layer at a time. It does **not** claim to predict landslides. The current workflow can discover Sentinel observations for an area of interest (AOI), derive terrain features from a public 30 m DEM, summarize GPM IMERG rainfall, and replay those evidence layers around curated historical landslide events with explicit spatial and temporal validity limits.
 
 ## Current pipeline
 
@@ -19,15 +19,21 @@ region.json
                    └── 1d / 3d / 7d AOI-mean accumulation
 
 validation/events.json
-   └── validate → event-centered terrain + rainfall
-                    ├── historical event date
-                    ├── earlier same-location temporal control
-                    └── 1d / 3d / 7d rainfall deltas
+   └── validate → historical evidence replay
+                    ├── terrain context
+                    ├── calendar-day 1d / 3d / 7d rainfall
+                    ├── same-location temporal control
+                    ├── event-centered 6h / 12h / 24h / 72h rainfall
+                    ├── matched event-centered control
+                    ├── event-minus-control deltas
+                    └── spatial / temporal provenance
 ```
 
 The metadata and terrain paths use Microsoft Planetary Computer. Rainfall uses NASA Earthdata GIS's public GPM IMERG Early V07 ImageServer. Historical validation starts from curated NASA Global Landslide Catalog (GLC) identifiers and keeps raw evidence visible instead of turning it into a hazard score.
 
 No Earth Engine project or NASA/PPS credentials are required by these commands.
+
+For the current validation assumptions, temporal semantics, spatial-validity heuristic, and known provenance limitations, see [`docs/validation-methodology.md`](docs/validation-methodology.md).
 
 ## Setup
 
@@ -105,24 +111,38 @@ For antimeridian-crossing AOIs, the geometry is split into two envelopes and rec
 
 ## Replay evidence around a historical event
 
-The initial validation manifest contains three rainfall/downpour-triggered events identified by stable NASA GLC event IDs. Run one event with:
+The initial validation manifest contains three manually re-verified rainfall/downpour-triggered GLC events. Run one event with:
 
 ```bash
 geohazard-watch validate \
   --event glc-2342-rize-2010
 ```
 
-The default design is intentionally simple and inspectable:
+The default design is intentionally inspectable:
 
 - build an approximately 10 km × 10 km AOI centered on the catalog point;
-- derive the existing terrain evidence once for that AOI;
-- derive 1/3/7-day rainfall ending on the historical event date;
-- derive the same rainfall evidence for the same AOI 28 days earlier;
-- report the raw evidence plus event-minus-control rainfall accumulation differences.
+- derive terrain evidence once for that AOI;
+- derive calendar-day 1/3/7-day rainfall ending on the historical event date;
+- derive the same calendar-day rainfall for the same AOI 28 days earlier;
+- when a curated UTC event boundary exists, derive trailing 6/12/24/72-hour rainfall immediately before it;
+- derive matched 6/12/24/72-hour rainfall at the same UTC clock boundary shifted 28 days earlier;
+- report raw evidence plus event-minus-control deltas for both rainfall views;
+- expose catalog location quality, temporal provenance, and scale-aware interpretation alongside the evidence.
 
-The earlier date is a **temporal reference**, not a labeled negative example. A catalog containing no report at that place and date does not prove that no landslide occurred. The validation command therefore leaves `hazard_score` as `null` and makes no probability or forecast-skill claim.
+Event-centered windows use half-open UTC intervals:
 
-The initial `validation/events.json` records preserve legacy GLC event IDs for reproducibility. Event metadata and original source material should be re-verified before using these cases in scientific publication or a formal benchmark.
+```text
+6h  = [T-6h,  T)
+12h = [T-12h, T)
+24h = [T-24h, T)
+72h = [T-72h, T)
+```
+
+The legacy GLC records can contain a clock time but do not provide a timezone field. Where a clock time is used, `validation/events.json` records the curated local-time assumption and freezes the resulting UTC boundary for reproducible sensitivity analysis. Date-only events do not receive a synthesized event time.
+
+The earlier period is a **temporal reference**, not a labeled negative example. A catalog containing no report at that place and time does not prove that no landslide occurred. The validation command therefore leaves `hazard_score` as `null` and makes no probability or forecast-skill claim.
+
+The initial records deliberately include different location-quality regimes so evidence can be tested against real spatial uncertainty instead of only ideal cases. The full interpretation rules and known limitations are documented in [`docs/validation-methodology.md`](docs/validation-methodology.md).
 
 ## Run offline numerical tests
 
@@ -130,7 +150,7 @@ The initial `validation/events.json` records preserve legacy GLC event IDs for r
 python -m unittest discover -s tests
 ```
 
-Terrain, rainfall aggregation, and validation assembly have deterministic tests that do not require remote data access.
+Terrain, rainfall aggregation, event-centered windows, matched controls, and validation assembly have deterministic tests that do not require remote data access.
 
 ## Why build in layers?
 
@@ -151,6 +171,8 @@ explainable evidence fusion
 ```
 
 Each layer should be usable and testable before the next one is added. A new evidence layer should eventually justify itself by improving discrimination on historical cases rather than merely increasing pipeline complexity.
+
+Future raster evidence should retain raw/intermediate fields, provenance, and simple baselines before being reduced to any combined score.
 
 ## Data sources
 
@@ -177,4 +199,4 @@ https://data.nasa.gov/dataset/global-landslide-catalog-export
 https://gis.earthdata.nasa.gov/gis05/rest/services/Landslides/COOLR_Reports_Points/MapServer/0
 ```
 
-The legacy GLC export is useful for stable event identifiers, while COOLR is the current repository lineage. The project treats catalog incompleteness, event-date uncertainty, point-location uncertainty, and reporting bias as validation limitations rather than hidden assumptions.
+The legacy GLC export is useful for stable event identifiers, while COOLR is the current repository lineage. The project treats catalog incompleteness, event-date uncertainty, point-location uncertainty, temporal provenance, and reporting bias as validation limitations rather than hidden assumptions.
