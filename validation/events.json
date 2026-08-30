@@ -63,17 +63,17 @@
       "location": "Diyarbakir",
       "source_url": "https://data.nasa.gov/dataset/global-landslide-catalog-export",
       "catalog_record_url": "https://gis.earthdata.nasa.gov/gis05/rest/services/Landslides/COOLR_Reports_Points/MapServer/0/query?where=event_import_source%3D%27GLC%27%20AND%20event_import_id%3D%274736%27&outFields=*&returnGeometry=false&f=pjson",
-      "metadata_review_status": "core_only",
-      "source_name": null,
-      "source_link": null,
-      "event_description": null,
-      "location_description": null,
-      "location_accuracy": null,
-      "landslide_category": null,
-      "landslide_size": null,
-      "landslide_setting": null,
-      "gazetteer_closest_point": null,
-      "gazetteer_distance_km": null
+      "metadata_review_status": "reverified",
+      "source_name": "sports.ndtv.com",
+      "source_link": "http://sports.ndtv.com/football/news/202642-seven-dead-in-landslide-at-football-match-in-turkey",
+      "event_description": "At least seven people were killed late Sunday when a landslide invaded the pitch at an amateur football game in southeastern Turkey, engulfing players and spectators, local sources said. Three others were injured and a fourth person went missing as sodden earth knocked over a wall at the football pitch in the city of Sirnak, hit by heavy rains in recent days.",
+      "location_description": "Diyarbakir, Turkey",
+      "location_accuracy": "25km",
+      "landslide_category": "landslide",
+      "landslide_size": "large",
+      "landslide_setting": "unknown",
+      "gazetteer_closest_point": "Diyarbakır",
+      "gazetteer_distance_km": 1.03218
     }
   ]
 }
