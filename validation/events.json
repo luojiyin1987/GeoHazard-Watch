@@ -3,7 +3,7 @@
     "name": "NASA Global Landslide Catalog (GLC) / COOLR",
     "legacy_export": "https://data.nasa.gov/dataset/global-landslide-catalog-export",
     "current_layer": "https://gis.earthdata.nasa.gov/gis05/rest/services/Landslides/COOLR_Reports_Points/MapServer/0",
-    "curation_note": "Initial records preserve stable legacy GLC event IDs. Source-specific and location-quality fields remain explicitly null until re-verified against COOLR/original source material rather than being inferred from coordinates."
+    "curation_note": "The initial three validation records were manually re-verified against the legacy NASA GLC export. Source text is preserved as catalog provenance, including inconsistencies, rather than silently corrected or geolocated beyond the catalog record."
   },
   "events": [
     {
@@ -17,17 +17,17 @@
       "location": "Artvin",
       "source_url": "https://data.nasa.gov/dataset/global-landslide-catalog-export",
       "catalog_record_url": "https://gis.earthdata.nasa.gov/gis05/rest/services/Landslides/COOLR_Reports_Points/MapServer/0/query?where=event_import_source%3D%27GLC%27%20AND%20event_import_id%3D%271189%27&outFields=*&returnGeometry=false&f=pjson",
-      "metadata_review_status": "core_only",
-      "source_name": null,
-      "source_link": null,
-      "event_description": null,
-      "location_description": null,
-      "location_accuracy": null,
-      "landslide_category": null,
-      "landslide_size": null,
-      "landslide_setting": null,
-      "gazetteer_closest_point": null,
-      "gazetteer_distance_km": null
+      "metadata_review_status": "reverified",
+      "source_name": "google",
+      "source_link": "http://www.google.com/hostednews/ap/article/ALeqM5gbCvcpU78jS19d8ifJ6EP-vrS6NwD9ATIL501",
+      "event_description": "The Anatolia news agency says three people were killed near the town of Borcka, in Artvin province, when their house collapsed in a landslide late Wednesday. A 3-year-old child was rescued but search teams were still looking for another family member.",
+      "location_description": "Borcka, in Artvin province",
+      "location_accuracy": "10km",
+      "landslide_category": "landslide",
+      "landslide_size": "medium",
+      "landslide_setting": "unknown",
+      "gazetteer_closest_point": "Borçka",
+      "gazetteer_distance_km": 0.79004
     },
     {
       "id": "glc-2342-rize-2010",
@@ -40,17 +40,17 @@
       "location": "Rize",
       "source_url": "https://data.nasa.gov/dataset/global-landslide-catalog-export",
       "catalog_record_url": "https://gis.earthdata.nasa.gov/gis05/rest/services/Landslides/COOLR_Reports_Points/MapServer/0/query?where=event_import_source%3D%27GLC%27%20AND%20event_import_id%3D%272342%27&outFields=*&returnGeometry=false&f=pjson",
-      "metadata_review_status": "core_only",
-      "source_name": null,
-      "source_link": null,
-      "event_description": null,
-      "location_description": null,
-      "location_accuracy": null,
-      "landslide_category": null,
-      "landslide_size": null,
-      "landslide_setting": null,
-      "gazetteer_closest_point": null,
-      "gazetteer_distance_km": null
+      "metadata_review_status": "reverified",
+      "source_name": "reuters",
+      "source_link": "http://www.reuters.com/article/idUSLDE67Q09B",
+      "event_description": "Aug 27 (Reuters) - Eight people were killed and six were missing after landslides caused by torrential rain wiped out several homes in a town in northeast Turkey, the state-run Anatolian news agency said on Friday. The landslides hit the town of Gundogdu, in Rize province in the eastern Black Sea region, late on Thursday, and emergency workers were continuing rescue efforts on Friday. Anatolian quoted State Minister Faruk Nafiz Ozak, who was at the scene, as saying six people were still missing. Bulldozers were trying to shift a four-storey building that had been knocked sideways by a landslide. Telephone communications were cut in the mountainous area.",
+      "location_description": "Gundogdu district of Rize city, Rize province",
+      "location_accuracy": "1km",
+      "landslide_category": "landslide",
+      "landslide_size": "medium",
+      "landslide_setting": "unknown",
+      "gazetteer_closest_point": "Gündoğdu",
+      "gazetteer_distance_km": 2.12704
     },
     {
       "id": "glc-4736-diyarbakir-2013",
