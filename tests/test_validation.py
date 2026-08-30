@@ -14,18 +14,22 @@ from geohazard_watch.validation import (
 )
 
 
-def _event() -> ValidationEvent:
-    return ValidationEvent(
-        id="glc-test",
-        catalog_event_id=42,
-        event_date=date(2010, 8, 26),
-        longitude=40.6167,
-        latitude=41.0524,
-        trigger="downpour",
-        country="Turkey",
-        location="Rize",
-        source_url="https://example.invalid/glc",
-    )
+def _event(**overrides: object) -> ValidationEvent:
+    values: dict[str, object] = {
+        "id": "glc-test",
+        "catalog_event_id": 42,
+        "event_date": date(2010, 8, 26),
+        "longitude": 40.6167,
+        "latitude": 41.0524,
+        "trigger": "downpour",
+        "country": "Turkey",
+        "location": "Rize",
+        "source_url": "https://example.invalid/glc",
+        "catalog_record_url": "https://example.invalid/coolr/42",
+        "metadata_review_status": "core_only",
+    }
+    values.update(overrides)
+    return ValidationEvent(**values)  # type: ignore[arg-type]
 
 
 def _rainfall(one: float, three: float, seven: float) -> dict[str, object]:
@@ -54,6 +58,59 @@ class ValidationTests(unittest.TestCase):
             places=2,
         )
 
+    def test_unverified_location_quality_is_explicit(self) -> None:
+        event = _event()
+
+        payload = event.as_dict()
+
+        self.assertEqual(payload["provenance"]["metadata_review_status"], "core_only")
+        self.assertEqual(payload["location_quality"]["status"], "unverified")
+        self.assertIsNone(payload["location_quality"]["accuracy"])
+        self.assertIn("not been re-verified", payload["location_quality"]["warning"])
+
+    def test_catalog_reported_location_quality_is_preserved(self) -> None:
+        event = _event(
+            metadata_review_status="reverified",
+            source_name="Example report",
+            source_link="https://example.invalid/report",
+            location_description="Road cut above village",
+            location_accuracy="1km",
+            landslide_category="landslide",
+            landslide_size="medium",
+            landslide_setting="natural_slope",
+            gazetteer_closest_point="Rize",
+            gazetteer_distance_km=2.5,
+        )
+
+        payload = event.as_dict()
+
+        self.assertEqual(
+            payload["location_quality"]["status"], "reverified_catalog_metadata"
+        )
+        self.assertEqual(payload["location_quality"]["accuracy"], "1km")
+        self.assertEqual(payload["location_quality"]["gazetteer_distance_km"], 2.5)
+        self.assertEqual(payload["provenance"]["source_name"], "Example report")
+        self.assertEqual(payload["landslide_metadata"]["size"], "medium")
+
+    def test_manifest_rejects_negative_gazetteer_distance(self) -> None:
+        payload = {
+            "id": "glc-test",
+            "catalog_event_id": 42,
+            "event_date": "2010-08-26",
+            "longitude": 40.6167,
+            "latitude": 41.0524,
+            "trigger": "downpour",
+            "country": "Turkey",
+            "location": "Rize",
+            "source_url": "https://example.invalid/glc",
+            "catalog_record_url": "https://example.invalid/coolr/42",
+            "metadata_review_status": "reverified",
+            "gazetteer_distance_km": -1.0,
+        }
+
+        with self.assertRaisesRegex(ValueError, "must not be negative"):
+            ValidationEvent.from_dict(payload)
+
     def test_assemble_validation_reports_raw_evidence_and_rainfall_delta(self) -> None:
         event = _event()
         region = event_region(event)
@@ -79,6 +136,7 @@ class ValidationTests(unittest.TestCase):
             result["comparison"]["rainfall_accumulation_delta_mm"],
             {"1d": 18.0, "3d": 43.0, "7d": 65.0},
         )
+        self.assertIn("site-specific", result["design"]["terrain_spatial_semantics"])
         self.assertIsNone(result["interpretation"]["hazard_score"])
 
     @patch("geohazard_watch.validation.query_rainfall")
@@ -110,6 +168,7 @@ class ValidationTests(unittest.TestCase):
             ],
         )
         self.assertEqual(result["design"]["temporal_control_date"], "2010-07-29")
+        self.assertEqual(result["event"]["location_quality"]["status"], "unverified")
 
     def test_control_offset_must_separate_seven_day_windows(self) -> None:
         with patch("geohazard_watch.validation.load_events") as load_events:
