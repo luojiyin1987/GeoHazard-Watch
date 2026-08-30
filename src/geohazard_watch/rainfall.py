@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+from http.client import IncompleteRead
 import json
+import ssl
+from time import sleep
 from typing import Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -20,6 +23,9 @@ IMAGE_SERVER = (
 PRODUCT = "GPM_3IMERGHHE"
 PRODUCT_VERSION = "07"
 HTTP_TIMEOUT_SECONDS = 30
+HTTP_MAX_ATTEMPTS = 4
+HTTP_RETRY_BASE_SECONDS = 0.5
+RETRYABLE_HTTP_STATUS = frozenset({408, 429})
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 PIXEL_SIZE_DEG = 0.1
 HALF_HOUR_HOURS = 0.5
@@ -41,31 +47,82 @@ def _parse_date(value: str) -> date:
         raise ValueError(f"date must use YYYY-MM-DD format: {value!r}") from exc
 
 
+def _request_context(url: str, params: dict[str, str]) -> str:
+    """Return compact request context suitable for terminal error messages."""
+
+    endpoint = url.rstrip("/").rsplit("/", 1)[-1]
+    time_range = params.get("time")
+    if time_range:
+        return f"endpoint={endpoint}, time={time_range}"
+    return f"endpoint={endpoint}"
+
+
+def _is_retryable_error(exc: BaseException) -> bool:
+    """Classify transport and HTTP failures that are safe to retry for GETs."""
+
+    if isinstance(exc, HTTPError):
+        return exc.code in RETRYABLE_HTTP_STATUS or 500 <= exc.code <= 599
+
+    if isinstance(exc, URLError):
+        reason = exc.reason
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            return False
+        return True
+
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        return False
+
+    return isinstance(exc, (ssl.SSLError, TimeoutError, ConnectionError, IncompleteRead))
+
+
 def _request_json(url: str, params: dict[str, str]) -> dict[str, object]:
+    """GET one JSON response, retrying only transient idempotent failures."""
+
     request_url = f"{url}?{urlencode(params)}"
-    request = Request(request_url, headers={"User-Agent": "GeoHazard-Watch/0.1"})
-    try:
-        with urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-            length = response.headers.get("Content-Length")
-            if length is not None and int(length) > MAX_RESPONSE_BYTES:
-                raise OSError(f"Rainfall service response is unexpectedly large: {length} bytes")
-            payload = response.read(MAX_RESPONSE_BYTES + 1)
-    except (HTTPError, URLError, TimeoutError) as exc:
-        raise OSError(f"Failed to query NASA rainfall service: {exc}") from exc
+    context = _request_context(url, params)
+    last_error: BaseException | None = None
 
-    if len(payload) > MAX_RESPONSE_BYTES:
-        raise OSError("Rainfall service response exceeded the size limit")
+    for attempt in range(1, HTTP_MAX_ATTEMPTS + 1):
+        request = Request(request_url, headers={"User-Agent": "GeoHazard-Watch/0.1"})
+        try:
+            with urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+                length = response.headers.get("Content-Length")
+                if length is not None and int(length) > MAX_RESPONSE_BYTES:
+                    raise OSError(
+                        f"Rainfall service response is unexpectedly large: {length} bytes"
+                    )
+                payload = response.read(MAX_RESPONSE_BYTES + 1)
+        except (HTTPError, URLError, TimeoutError, ConnectionError, ssl.SSLError, IncompleteRead) as exc:
+            if not _is_retryable_error(exc):
+                raise OSError(f"Failed to query NASA rainfall service ({context}): {exc}") from exc
 
-    try:
-        result = json.loads(payload)
-    except json.JSONDecodeError as exc:
-        raise OSError("Rainfall service returned invalid JSON") from exc
+            last_error = exc
+            if attempt == HTTP_MAX_ATTEMPTS:
+                break
 
-    if not isinstance(result, dict):
-        raise OSError("Rainfall service returned an unexpected response")
-    if "error" in result:
-        raise OSError(f"Rainfall service error: {result['error']}")
-    return result
+            delay = HTTP_RETRY_BASE_SECONDS * (2 ** (attempt - 1))
+            sleep(delay)
+            continue
+
+        if len(payload) > MAX_RESPONSE_BYTES:
+            raise OSError("Rainfall service response exceeded the size limit")
+
+        try:
+            result = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise OSError("Rainfall service returned invalid JSON") from exc
+
+        if not isinstance(result, dict):
+            raise OSError("Rainfall service returned an unexpected response")
+        if "error" in result:
+            raise OSError(f"Rainfall service error: {result['error']}")
+        return result
+
+    assert last_error is not None
+    raise OSError(
+        f"Failed to query NASA rainfall service after {HTTP_MAX_ATTEMPTS} attempts "
+        f"({context}): {last_error}"
+    ) from last_error
 
 
 def _bbox_parts(
