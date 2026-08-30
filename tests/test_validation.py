@@ -8,6 +8,7 @@ from unittest.mock import call, patch
 
 from geohazard_watch.validation import (
     ValidationEvent,
+    _parse_location_accuracy_km,
     assemble_validation_result,
     event_region,
     validate_event,
@@ -34,7 +35,7 @@ def _event(**overrides: object) -> ValidationEvent:
 
 def _rainfall(one: float, three: float, seven: float) -> dict[str, object]:
     return {
-        "source": {"product": "test"},
+        "source": {"product": "test", "spatial_resolution_deg": 0.1},
         "rainfall": {
             "accumulation_mean_mm": {
                 "1d": one,
@@ -58,6 +59,14 @@ class ValidationTests(unittest.TestCase):
             places=2,
         )
 
+    def test_location_accuracy_labels_are_normalized_to_kilometres(self) -> None:
+        self.assertEqual(_parse_location_accuracy_km("25km"), 25.0)
+        self.assertEqual(_parse_location_accuracy_km("1 km"), 1.0)
+        self.assertEqual(_parse_location_accuracy_km("500m"), 0.5)
+        self.assertEqual(_parse_location_accuracy_km("exact"), 0.0)
+        self.assertIsNone(_parse_location_accuracy_km("unknown"))
+        self.assertIsNone(_parse_location_accuracy_km(None))
+
     def test_unverified_location_quality_is_explicit(self) -> None:
         event = _event()
 
@@ -66,6 +75,7 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(payload["provenance"]["metadata_review_status"], "core_only")
         self.assertEqual(payload["location_quality"]["status"], "unverified")
         self.assertIsNone(payload["location_quality"]["accuracy"])
+        self.assertIsNone(payload["location_quality"]["accuracy_km"])
         self.assertIn("not been re-verified", payload["location_quality"]["warning"])
 
     def test_catalog_reported_location_quality_is_preserved(self) -> None:
@@ -88,6 +98,7 @@ class ValidationTests(unittest.TestCase):
             payload["location_quality"]["status"], "reverified_catalog_metadata"
         )
         self.assertEqual(payload["location_quality"]["accuracy"], "1km")
+        self.assertEqual(payload["location_quality"]["accuracy_km"], 1.0)
         self.assertEqual(payload["location_quality"]["gazetteer_distance_km"], 2.5)
         self.assertEqual(payload["provenance"]["source_name"], "Example report")
         self.assertEqual(payload["landslide_metadata"]["size"], "medium")
@@ -110,6 +121,50 @@ class ValidationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "must not be negative"):
             ValidationEvent.from_dict(payload)
+
+    def test_scale_smaller_than_location_uncertainty_is_contextual_only(self) -> None:
+        event = _event(metadata_review_status="reverified", location_accuracy="25km")
+        region = event_region(event)
+
+        result = assemble_validation_result(
+            event=event,
+            region=region,
+            terrain={"terrain": {"relief_m": 100.0}},
+            event_rainfall=_rainfall(20.0, 30.0, 40.0),
+            control_rainfall=_rainfall(1.0, 2.0, 3.0),
+            control_date=date(2010, 7, 29),
+            half_size_km=5.0,
+            control_offset_days=28,
+        )
+
+        spatial = result["design"]["spatial_validity"]
+        self.assertEqual(spatial["catalog_location_accuracy_km"], 25.0)
+        self.assertTrue(spatial["aoi_smaller_than_location_uncertainty"])
+        self.assertEqual(spatial["rainfall_nominal_grid_scale_km"], 11.132)
+        self.assertTrue(spatial["rainfall_grid_smaller_than_location_uncertainty"])
+        self.assertEqual(spatial["terrain_interpretation"], "contextual_only")
+        self.assertEqual(spatial["rainfall_interpretation"], "contextual_only")
+
+    def test_unknown_location_accuracy_keeps_spatial_validity_unresolved(self) -> None:
+        event = _event()
+        region = event_region(event)
+
+        result = assemble_validation_result(
+            event=event,
+            region=region,
+            terrain={"terrain": {"relief_m": 100.0}},
+            event_rainfall=_rainfall(20.0, 30.0, 40.0),
+            control_rainfall=_rainfall(1.0, 2.0, 3.0),
+            control_date=date(2010, 7, 29),
+            half_size_km=5.0,
+            control_offset_days=28,
+        )
+
+        spatial = result["design"]["spatial_validity"]
+        self.assertIsNone(spatial["catalog_location_accuracy_km"])
+        self.assertIsNone(spatial["aoi_smaller_than_location_uncertainty"])
+        self.assertEqual(spatial["terrain_interpretation"], "unresolved")
+        self.assertEqual(spatial["rainfall_interpretation"], "unresolved")
 
     def test_assemble_validation_reports_raw_evidence_and_rainfall_delta(self) -> None:
         event = _event()
@@ -169,6 +224,7 @@ class ValidationTests(unittest.TestCase):
         )
         self.assertEqual(result["design"]["temporal_control_date"], "2010-07-29")
         self.assertEqual(result["event"]["location_quality"]["status"], "unverified")
+        self.assertEqual(result["design"]["spatial_validity"]["terrain_interpretation"], "unresolved")
 
     def test_control_offset_must_separate_seven_day_windows(self) -> None:
         with patch("geohazard_watch.validation.load_events") as load_events:

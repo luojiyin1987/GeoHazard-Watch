@@ -7,6 +7,7 @@ from datetime import date, timedelta
 import json
 import math
 from pathlib import Path
+import re
 from typing import Any
 
 from .aoi import Region
@@ -19,6 +20,7 @@ DEFAULT_AOI_HALF_SIZE_KM = 5.0
 DEFAULT_CONTROL_OFFSET_DAYS = 28
 KM_PER_DEG_LAT = 111.32
 _METADATA_REVIEW_STATES = {"core_only", "reverified"}
+_LOCATION_ACCURACY_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(km|m)\s*$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -136,14 +138,20 @@ class ValidationEvent:
             gazetteer_distance_km=gazetteer_distance,
         )
 
-    def location_quality(self) -> dict[str, object]:
-        """Return explicit location-confidence context for interpreting terrain evidence."""
+    def location_accuracy_km(self) -> float | None:
+        """Normalize a catalog accuracy label to kilometres when possible."""
 
+        return _parse_location_accuracy_km(self.location_accuracy)
+
+    def location_quality(self) -> dict[str, object]:
+        """Return explicit location-confidence context for interpreting evidence."""
+
+        accuracy_km = self.location_accuracy_km()
         if self.location_accuracy is None:
             status = "unverified"
             warning = (
                 "Catalog point accuracy has not been re-verified against source material; "
-                "event-centered terrain is contextual and must not be treated as site-specific."
+                "event-centered evidence is contextual and must not be treated as site-specific."
             )
         else:
             status = "catalog_reported"
@@ -157,6 +165,7 @@ class ValidationEvent:
         return {
             "status": status,
             "accuracy": self.location_accuracy,
+            "accuracy_km": accuracy_km,
             "description": self.location_description,
             "gazetteer_closest_point": self.gazetteer_closest_point,
             "gazetteer_distance_km": self.gazetteer_distance_km,
@@ -218,6 +227,86 @@ def _optional_finite_number(value: object, field: str) -> float | None:
     if value is None:
         return None
     return _finite_number(value, field)
+
+
+def _parse_location_accuracy_km(value: str | None) -> float | None:
+    """Parse GLC-style accuracy labels such as 25km, 1 km, 500m, or exact."""
+
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized == "exact":
+        return 0.0
+    match = _LOCATION_ACCURACY_RE.fullmatch(normalized)
+    if match is None:
+        return None
+    magnitude = float(match.group(1))
+    return magnitude if match.group(2).lower() == "km" else magnitude / 1000.0
+
+
+def _rainfall_grid_scale_km(result: dict[str, Any]) -> float | None:
+    """Return a nominal north-south grid scale from rainfall degree resolution."""
+
+    source = result.get("source")
+    if not isinstance(source, dict):
+        return None
+    resolution = source.get("spatial_resolution_deg")
+    if isinstance(resolution, bool) or not isinstance(resolution, (int, float)):
+        return None
+    resolution_deg = float(resolution)
+    if not math.isfinite(resolution_deg) or resolution_deg <= 0:
+        return None
+    return round(resolution_deg * KM_PER_DEG_LAT, 3)
+
+
+def _spatial_validity(
+    *, event: ValidationEvent, half_size_km: float, event_rainfall: dict[str, Any]
+) -> dict[str, object]:
+    """Compare catalog location uncertainty with evidence support scales."""
+
+    accuracy_km = event.location_accuracy_km()
+    rainfall_grid_km = _rainfall_grid_scale_km(event_rainfall)
+
+    if accuracy_km is None:
+        return {
+            "catalog_location_accuracy_km": None,
+            "aoi_half_size_km": half_size_km,
+            "aoi_smaller_than_location_uncertainty": None,
+            "rainfall_nominal_grid_scale_km": rainfall_grid_km,
+            "rainfall_grid_smaller_than_location_uncertainty": None,
+            "terrain_interpretation": "unresolved",
+            "rainfall_interpretation": "unresolved",
+            "statement": (
+                "Catalog location uncertainty is not available as a numeric scale, so terrain "
+                "and rainfall remain contextual until location quality is re-verified."
+            ),
+        }
+
+    aoi_smaller = half_size_km < accuracy_km
+    rainfall_smaller = rainfall_grid_km is not None and rainfall_grid_km < accuracy_km
+    terrain_interpretation = "contextual_only" if aoi_smaller else "catalog_scale_supported"
+    if rainfall_grid_km is None:
+        rainfall_interpretation = "unresolved"
+    else:
+        rainfall_interpretation = (
+            "contextual_only" if rainfall_smaller else "catalog_scale_supported"
+        )
+
+    return {
+        "catalog_location_accuracy_km": accuracy_km,
+        "aoi_half_size_km": half_size_km,
+        "aoi_smaller_than_location_uncertainty": aoi_smaller,
+        "rainfall_nominal_grid_scale_km": rainfall_grid_km,
+        "rainfall_grid_smaller_than_location_uncertainty": (
+            rainfall_smaller if rainfall_grid_km is not None else None
+        ),
+        "terrain_interpretation": terrain_interpretation,
+        "rainfall_interpretation": rainfall_interpretation,
+        "statement": (
+            "Evidence whose support scale is smaller than the catalog location-accuracy radius "
+            "must be interpreted as contextual rather than site-specific."
+        ),
+    }
 
 
 def load_events(path: str | Path = DEFAULT_EVENTS_PATH) -> dict[str, ValidationEvent]:
@@ -320,6 +409,11 @@ def assemble_validation_result(
         window: round(positive[window] - control[window], 3)
         for window in ("1d", "3d", "7d")
     }
+    spatial_validity = _spatial_validity(
+        event=event,
+        half_size_km=half_size_km,
+        event_rainfall=event_rainfall,
+    )
 
     return {
         "event": event.as_dict(),
@@ -337,6 +431,7 @@ def assemble_validation_result(
                 "terrain summarizes an AOI centered on the catalog point; interpret it as "
                 "site-specific only when event location quality supports that use"
             ),
+            "spatial_validity": spatial_validity,
         },
         "evidence": {
             "terrain": terrain,
